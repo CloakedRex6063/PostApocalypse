@@ -1,0 +1,38 @@
+BasedOnStyle: Google
+DerivePointerAlignment: false
+Standard: c++17
+SortIncludes: false
+IndentWidth: 4
+NamespaceIndentation: All
+SortUsingDeclarations: false
+SpacesBeforeTrailingComments: 2
+IncludeBlocks: Preserve
+AccessModifierOffset: -4
+ReflowComments: true
+ColumnLimit: 128
+PointerAlignment: Left
+ReferenceAlignment: Left
+AlignAfterOpenBracket: Align
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: Always
+  AfterStruct: true
+  AfterClass: true
+  AfterEnum: true
+  AfterNamespace: true
+  BeforeCatch: true
+  BeforeElse: true
+  AfterExternBlock: true
+  AfterUnion: true
+  BeforeLambdaBody: true
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+BinPackArguments: false
+BinPackParameters: false
+ExperimentalAutoDetectBinPacking: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowAllArgumentsOnNextLine: false
+AllowAllConstructorInitializersOnNextLine: true
+Cpp11BracedListStyle: false

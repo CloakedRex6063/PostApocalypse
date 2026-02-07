@@ -1,0 +1,6 @@
+file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+add_executable(PostApocalypticGame ${GAME_SOURCES})
+target_include_directories(PostApocalypticGame PUBLIC inc)
+target_link_libraries(PostApocalypticGame PUBLIC Engine)
+copy_dirs(PostApocalypticGame ${CMAKE_SOURCE_DIR}/assets)
+copy_dirs(PostApocalypticGame ${CMAKE_SOURCE_DIR}/shaders)

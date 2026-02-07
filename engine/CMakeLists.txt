@@ -1,0 +1,5 @@
+file(GLOB_RECURSE ENGINE_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+add_library(Engine STATIC ${ENGINE_SOURCES})
+target_include_directories(Engine PUBLIC inc)
+target_precompile_headers(Engine PUBLIC src/engine_pch.hpp)
+add_subdirectory(extern)
