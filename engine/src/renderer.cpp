@@ -10,6 +10,22 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
     InitBuffers();
     InitPBRShader();
     InitSkyboxShader();
+
+    m_engine->GetWindow().AddResizeCallback(
+    [&](const glm::uvec2 size)
+    {
+        m_context->GetGraphicsQueue()->WaitIdle();
+        m_context->ResizeBuffers(size.x, size.y);
+        m_context->DestroyDepthStencil(m_depth_stencil);
+        m_context->DestroyTexture(m_depth_texture);
+
+        m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
+                            .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
+                            .SetFormat(Swift::Format::eD32F)
+                            .SetMipmapLevels(0)
+                            .Build();
+        m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
+    });
 }
 
 Renderer::~Renderer()
@@ -281,7 +297,7 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
         bounding_offset += mesh.meshlets.size();
     }
 
-    auto offset = uint32_t(m_renderables.size());
+    auto offset = static_cast<uint32_t>(m_renderables.size());
     auto size = renderers.size();
     m_renderables.insert(m_renderables.end(), renderers.begin(), renderers.end());
     return { offset, size };
