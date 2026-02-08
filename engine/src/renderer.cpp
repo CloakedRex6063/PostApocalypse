@@ -1,38 +1,38 @@
 #include "renderer.hpp"
 #include "engine.hpp"
 #include "shader_data.hpp"
-#include "glm/gtx/associated_min_max.hpp"
-#include "glm/gtx/associated_min_max.hpp"
 
 Renderer::Renderer(Engine* engine) : m_engine(engine)
 {
     InitContext();
+
     InitBuffers();
     InitPBRShader();
     InitSkyboxShader();
 
     m_engine->GetWindow().AddResizeCallback(
-    [&](const glm::uvec2 size)
-    {
-        m_context->GetGraphicsQueue()->WaitIdle();
-        m_context->ResizeBuffers(size.x, size.y);
-        m_context->DestroyDepthStencil(m_depth_stencil);
-        m_context->DestroyTexture(m_depth_texture);
+        [&](const glm::uvec2 size)
+        {
+            m_context->GetGraphicsQueue()->WaitIdle();
+            m_context->ResizeBuffers(size.x, size.y);
+            m_context->DestroyDepthStencil(m_depth_stencil);
+            m_context->DestroyTexture(m_depth_texture);
 
-        m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
-                            .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
-                            .SetFormat(Swift::Format::eD32F)
-                            .SetMipmapLevels(0)
-                            .Build();
-        m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
-    });
+            m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
+                                  .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
+                                  .SetFormat(Swift::Format::eD32F)
+                                  .SetMipmapLevels(0)
+                                  .Build();
+            m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
+        });
 }
 
 Renderer::~Renderer()
 {
-    if (m_skybox)
+    if (m_skybox_texture.texture)
     {
-        m_context->DestroyTexture(m_skybox);
+        m_context->DestroyTexture(m_skybox_texture.texture);
+        m_context->DestroyShaderResource(m_skybox_texture.texture_srv);
     }
     Swift::DestroyContext(m_context);
 }
@@ -51,7 +51,7 @@ void Renderer::Update() const
         .view = camera.m_view_matrix,
         .proj = camera.m_proj_matrix,
         .cam_pos = camera.m_position,
-        .cubemap_index = m_skybox_srv->GetDescriptorIndex(),
+        .cubemap_index = m_skybox_texture.texture_srv->GetDescriptorIndex(),
         .transform_buffer_index = m_transform_buffer_srv->GetDescriptorIndex(),
         .material_buffer_index = m_material_buffer_srv->GetDescriptorIndex(),
         .point_light_buffer_index = m_point_light_buffer_srv->GetDescriptorIndex(),
@@ -96,6 +96,30 @@ void Renderer::InitContext()
                                        .height = size.y,
                                        .native_window_handle = m_engine->GetWindow().GetNativeWindow(),
                                        .native_display_handle = nullptr });
+
+    constexpr auto white = 0xFFFFFFFF;
+    m_dummy_white_texture.texture = Swift::TextureBuilder(m_context, 1, 1)
+                                        .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
+                                        .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                        .SetData(&white)
+                                        .Build();
+    m_dummy_white_texture.texture_srv = m_context->CreateShaderResource(m_dummy_white_texture.texture);
+
+    constexpr auto black = 0xFF000000;
+    m_dummy_black_texture.texture = Swift::TextureBuilder(m_context, 1, 1)
+                                        .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
+                                        .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                        .SetData(&black)
+                                        .Build();
+    m_dummy_black_texture.texture_srv = m_context->CreateShaderResource(m_dummy_black_texture.texture);
+
+    constexpr auto normal = 0xFFFF8080;
+    m_dummy_normal_texture.texture = Swift::TextureBuilder(m_context, 1, 1)
+                                         .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
+                                         .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                         .SetData(&normal)
+                                         .Build();
+    m_dummy_normal_texture.texture_srv = m_context->CreateShaderResource(m_dummy_normal_texture.texture);
 
     m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
                           .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
@@ -243,21 +267,46 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
         {
             material.albedo_index = m_textures[texture_offset + material.albedo_index].texture_srv->GetDescriptorIndex();
         }
+        else
+        {
+            material.albedo_index = m_dummy_white_texture.texture_srv->GetDescriptorIndex();
+        }
+
         if (material.metal_rough_index != -1)
         {
-            material.metal_rough_index = m_textures[texture_offset + material.metal_rough_index].texture_srv->GetDescriptorIndex();
+            material.metal_rough_index =
+                m_textures[texture_offset + material.metal_rough_index].texture_srv->GetDescriptorIndex();
         }
+        else
+        {
+            material.metal_rough_index = m_dummy_white_texture.texture_srv->GetDescriptorIndex();
+        }
+
         if (material.occlusion_index != -1)
         {
             material.occlusion_index = m_textures[texture_offset + material.occlusion_index].texture_srv->GetDescriptorIndex();
         }
+        else
+        {
+            material.occlusion_index = m_dummy_white_texture.texture_srv->GetDescriptorIndex();
+        }
+
         if (material.emissive_index != -1)
         {
             material.emissive_index = m_textures[texture_offset + material.emissive_index].texture_srv->GetDescriptorIndex();
         }
+        else
+        {
+            material.emissive_index = m_dummy_black_texture.texture_srv->GetDescriptorIndex();
+        }
+
         if (material.normal_index != -1)
         {
             material.normal_index = m_textures[texture_offset + material.normal_index].texture_srv->GetDescriptorIndex();
+        }
+        else
+        {
+            material.normal_index = m_dummy_normal_texture.texture_srv->GetDescriptorIndex();
         }
     }
 

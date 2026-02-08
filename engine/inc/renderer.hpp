@@ -76,14 +76,14 @@ public:
     auto* GetContext() const { return m_context; }
     void SetSkybox(Swift::ITexture* texture)
     {
-        if (m_skybox)
+        if (m_skybox_texture.texture)
         {
             m_context->GetGraphicsQueue()->WaitIdle();
-            m_context->DestroyTexture(m_skybox);
-            m_context->DestroyShaderResource(m_skybox_srv);
+            m_context->DestroyTexture(m_skybox_texture.texture);
+            m_context->DestroyShaderResource(m_skybox_texture.texture_srv);
         }
-        m_skybox = texture;
-        m_skybox_srv = m_context->CreateShaderResource(m_skybox);
+        m_skybox_texture.texture = texture;
+        m_skybox_texture.texture_srv = m_context->CreateShaderResource(m_skybox_texture.texture);
     }
     std::tuple<uint32_t, uint32_t> AddRenderables(Model& model, const glm::mat4& transform)
     {
@@ -138,8 +138,12 @@ private:
     Engine* m_engine;
     Swift::IContext* m_context = nullptr;
     Swift::IHeap* m_texture_heap = nullptr;
-    Swift::ITexture* m_skybox = nullptr;
-    Swift::ITextureSRV* m_skybox_srv = nullptr;
+
+    TextureView m_skybox_texture;
+    TextureView m_dummy_white_texture;
+    TextureView m_dummy_black_texture;
+    TextureView m_dummy_normal_texture;
+
     Swift::ITexture* m_depth_texture = nullptr;
     Swift::IDepthStencil* m_depth_stencil = nullptr;
     Swift::IBuffer* m_global_constant_buffer = nullptr;
