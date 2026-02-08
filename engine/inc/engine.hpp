@@ -2,6 +2,7 @@
 #include "camera.hpp"
 #include "renderer.hpp"
 #include "resources.hpp"
+#include "scene.hpp"
 #include "window.hpp"
 
 class Engine;
@@ -29,6 +30,7 @@ public:
     auto& GetRenderer() const { return *m_renderer; }
     auto& GetCamera() const { return *m_camera; }
     auto& GetResources() const { return *m_resources; }
+    auto& GetScene() const { return *m_scene; }
 
 private:
     std::unique_ptr<Window> m_window;
@@ -36,6 +38,7 @@ private:
     std::unique_ptr<Camera> m_camera;
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<Resources> m_resources;
+    std::unique_ptr<Scene> m_scene;
 };
 
 template<GameConcept Game>
@@ -50,10 +53,9 @@ void Engine::Run()
         prev_time = current_time;
         m_input->Update();
         m_window->PollEvents();
-        m_camera->Update(*m_window, *m_input, delta_time);
-        std::println("{}", m_camera->m_rotation.y);
+        m_camera->Update(delta_time);
         m_renderer->Update();
+        m_scene->Update(delta_time);
         game->Update(delta_time);
-
     }
 }

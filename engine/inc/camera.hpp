@@ -3,10 +3,12 @@
 #include "glm/mat4x4.hpp"
 #include "glm/trigonometric.hpp"
 
+class Engine;
 class Camera
 {
 public:
-    void Update(Window& window, Input& input, float delta_time);
+    Camera(Engine* engine) : m_engine(engine) {}
+    void Update(float delta_time);
 
     float m_aspect_ratio = 16.f / 9.f;
     float m_fov = glm::radians(90.f);
@@ -25,6 +27,7 @@ public:
     glm::vec3 GetForwardVector() const { return -m_world_matrix[2]; }
 
 private:
+    Engine* m_engine;
     glm::mat4 m_world_matrix{};
     void UpdateKeyboard(Input& input, float delta_time);
     void UpdateMouse(Window& window, Input& input, float delta_time);

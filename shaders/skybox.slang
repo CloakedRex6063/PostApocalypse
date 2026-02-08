@@ -1,10 +1,4 @@
-cbuffer GlobalConstantBuffer : register(b1)
-{
-    float4x4 view_proj;
-    float4x4 view;
-    float4x4 proj;
-    uint cubemap_index;
-};
+#include "common.slang"
 
 struct Vertex
 {
@@ -75,7 +69,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 {
     SetMeshOutputCounts(MaxVertices, MaxPrimitives);
 
-    float3x3 view_rot = float3x3(view[0].xyz, view[1].xyz, view[2].xyz);
+    float3x3 view_rot = float3x3(GlobalConstants.view[0].xyz, GlobalConstants.view[1].xyz, GlobalConstants.view[2].xyz);
 
     for (uint i = 0; i < 3; i++)
     {
@@ -84,7 +78,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
         {
             float3 local_pos = skybox_vertices[vtx_idx];
             float3 rotated_pos = mul(view_rot, local_pos);
-            float4 clip_pos = mul(proj, float4(rotated_pos, 1.0));
+            float4 clip_pos = mul(GlobalConstants.proj, float4(rotated_pos, 1.0));
 
             verts[vtx_idx].position = clip_pos.xyww;
             verts[vtx_idx].tex_coords = local_pos;
@@ -101,7 +95,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 [shader("pixel")]
 float4 pixel_main(Vertex input) : SV_Target
 {
-    var skybox_texture = DescriptorHandle<TextureCube>(cubemap_index);
+    var skybox_texture = DescriptorHandle<TextureCube>(GlobalConstants.cubemap_index);
     float3 env_color = skybox_texture.Sample(samp, input.tex_coords).rgb;
     return float4(env_color, 1.0);
 }

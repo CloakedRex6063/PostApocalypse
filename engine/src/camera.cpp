@@ -1,15 +1,19 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "camera.hpp"
+
+#include "engine.hpp"
 #include "input.hpp"
 #include "glm/detail/type_quat.hpp"
 #include "glm/ext/matrix_clip_space.hpp"
 #include "glm/ext/matrix_transform.hpp"
 #include "glm/gtx/quaternion.hpp"
 
-void Camera::Update(Window& window, Input& input, const float delta_time)
+void Camera::Update(const float delta_time)
 {
+    auto& input = m_engine->GetInput();
+    auto& window = m_engine->GetWindow();
     UpdateKeyboard(input, delta_time);
-    UpdateMouse(window, input, delta_time);
+    UpdateMouse(window, m_engine->GetInput(), delta_time);
 
     const glm::mat4 translation = glm::translate(glm::mat4(1.0f), m_position);
     const glm::mat4 rotation_matrix = glm::toMat4(glm::quat(m_rotation));

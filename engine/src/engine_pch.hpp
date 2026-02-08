@@ -9,6 +9,7 @@
 #include "vector"
 #include "ranges"
 #include "print"
+#include "optional"
 
 #include "GLFW/glfw3.h"
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -20,3 +21,8 @@
 #include "glm/gtc/matrix_transform.hpp"
 #include "swift.hpp"
 #include "swift_builders.hpp"
+#include "meshoptimizer.h"
+#include "fastgltf/core.hpp"
+#include "fastgltf/types.hpp"
+#include "fastgltf/tools.hpp"
+#include "fastgltf/glm_element_traits.hpp"

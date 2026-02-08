@@ -23,6 +23,11 @@ CPMAddPackage(
         GIT_TAG 61458112
 )
 CPMAddPackage(
+        NAME fastgltf
+        GITHUB_REPOSITORY spnda/fastgltf
+        GIT_TAG v0.9.0
+)
+CPMAddPackage(
         NAME DDS
         GITHUB_REPOSITORY turanszkij/dds
         GIT_TAG d48a0bc
@@ -55,10 +60,29 @@ set(IMGUI_IMPL_VULKAN FALSE)
 add_subdirectory(${imgui_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/imgui EXCLUDE_FROM_ALL SYSTEM)
 
 add_library(dds INTERFACE)
-
 target_include_directories(dds
         INTERFACE
         ${DDS_SOURCE_DIR}
 )
+CPMAddPackage(
+        NAME mikktspace
+        GITHUB_REPOSITORY mmikk/MikkTSpace
+        GIT_TAG master
+        DOWNLOAD_ONLY TRUE
+)
+if (mikktspace_ADDED)
+    add_library(mikktspace STATIC ${mikktspace_SOURCE_DIR}/mikktspace.c)
+    target_include_directories(mikktspace PUBLIC ${mikktspace_SOURCE_DIR})
+endif ()
+CPMAddPackage(
+        NAME stb
+        GITHUB_REPOSITORY nothings/stb
+        GIT_TAG master
+)
 
-target_link_libraries(Engine PUBLIC glfw meshoptimizer glm imgui imgui-dx12 imgui-glfw Swift dds)
+if(stb_ADDED)
+    add_library(stb INTERFACE)
+    target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
+endif()
+
+target_link_libraries(Engine PUBLIC glfw meshoptimizer glm imgui imgui-dx12 imgui-glfw Swift dds fastgltf::fastgltf mikktspace stb)
