@@ -82,10 +82,16 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     emissive *= emissive_texture.Sample(samp, input.uv).rgb;
 
     float3 world_pos = input.world_pos;
-    float3 n = input.normal;
     float3 v = normalize(GlobalConstants.cam_pos - world_pos);
     float3 f0 = float3(0.04, 0.04, 0.04);
     f0 = lerp(f0, albedo, metallic);
+
+    float3 n = input.normal;
+    var normal_texture = DescriptorHandle<Texture2D>(uint(material.normal_index));
+    float3 tangent_normal = normal_texture.Sample(samp, input.uv).rgb * 2.0 - 1.0;
+    float3 bitangent = cross(input.normal, input.tangent.xyz) * input.tangent.w;
+    float3x3 TBN = float3x3(input.tangent.xyz, bitangent, input.normal);
+    n = normalize(mul(tangent_normal, TBN));
 
     float occlusion = 1.0;
     var occlusion_texture = DescriptorHandle<Texture2D>(uint(material.occlusion_index));

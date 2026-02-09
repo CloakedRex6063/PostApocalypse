@@ -357,7 +357,7 @@ std::vector<Mesh> Resources::LoadMesh(Model& model, const fastgltf::Asset& asset
             .vertices = vertices,
             .meshlet_vertices = meshlet_vertices,
             .meshlet_triangles = repacked_triangles,
-            .material_index = static_cast<int>(prim.materialIndex.value_or(0)),
+            .material_index = static_cast<int>(prim.materialIndex.value_or(-1)),
         };
         meshes.emplace_back(m);
     }

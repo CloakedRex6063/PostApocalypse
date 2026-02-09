@@ -16,7 +16,7 @@ Engine::Engine()
         .color = glm::vec3(1.0f, 0.95f, 0.8f),
         .cast_shadows = true,
     });
-    m_resources->LoadModel("assets/helmet.gltf");
+    m_resources->LoadModel("assets/cathedral/cathedral.gltf");
 }
 
 Engine::~Engine()

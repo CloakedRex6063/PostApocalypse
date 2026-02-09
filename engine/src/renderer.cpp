@@ -327,6 +327,7 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
         const auto transform_index = static_cast<uint32_t>(m_transforms.size());
         auto final_transform = transform * model.transforms[node.transform_index];
         m_transforms.emplace_back(final_transform);
+        const auto material_index = static_cast<int>(m_materials.size());
         m_materials.emplace_back(model.materials[mesh.material_index]);
         renderers.push_back({
             .m_vertex_buffer = vertex_buffer,
@@ -338,7 +339,7 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
             .m_mesh_triangle_buffer = meshlet_tris_buffer,
             .m_mesh_triangle_buffer_srv = meshlet_tris_srv,
             .m_meshlet_count = static_cast<uint32_t>(mesh.meshlets.size()),
-            .m_material_index = mesh.material_index,
+            .m_material_index = material_index,
             .m_transform_index = transform_index,
             .m_bounding_offset = bounding_offset,
         });
