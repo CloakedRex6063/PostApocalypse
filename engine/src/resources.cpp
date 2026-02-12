@@ -5,8 +5,6 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "engine.hpp"
 #include "stb_image.h"
-#include "glm/gtc/quaternion.hpp"
-#include "glm/gtc/type_ptr.hpp"
 
 Resources::Resources(Engine* engine) : m_engine(engine) {}
 

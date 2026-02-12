@@ -1,6 +1,6 @@
 #include "common.slang"
 
-struct Vertex
+struct SkyboxVertex
 {
     float4 position : SV_POSITION;
     float3 tex_coords : TEXCOORD0;
@@ -64,7 +64,7 @@ SamplerState samp : register(s0);
 [numthreads(12, 1, 1)]
 [shader("mesh")]
 void mesh_main(uint gtid: SV_GroupThreadID,
-               OutputVertices<Vertex, MaxVertices> verts,
+               OutputVertices<SkyboxVertex, MaxVertices> verts,
                OutputIndices<uint3, MaxPrimitives> tris)
 {
     SetMeshOutputCounts(MaxVertices, MaxPrimitives);
@@ -93,7 +93,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 }
 
 [shader("pixel")]
-float4 pixel_main(Vertex input) : SV_Target
+float4 pixel_main(SkyboxVertex input) : SV_Target
 {
     var skybox_texture = DescriptorHandle<TextureCube>(GlobalConstants.cubemap_index);
     float3 env_color = skybox_texture.Sample(samp, input.tex_coords).rgb;

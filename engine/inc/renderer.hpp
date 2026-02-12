@@ -18,36 +18,7 @@ struct MeshRenderer
     uint32_t m_transform_index;
     uint32_t m_bounding_offset;
 
-    void Draw(Swift::ICommand* command, const bool should_cull = false, const uint32_t pass_index = 0) const
-    {
-        const struct PushConstants
-        {
-            uint32_t vertex_buffer;
-            uint32_t meshlet_buffer;
-            uint32_t mesh_vertex_buffer;
-            uint32_t mesh_triangle_buffer;
-            int material_index;
-            uint32_t transform_index;
-            uint32_t meshlet_count;
-            uint32_t bounding_offset;
-            uint32_t should_cull;
-            uint32_t pass_index;
-        } push_constants{
-            .vertex_buffer = m_vertex_buffer_srv->GetDescriptorIndex(),
-            .meshlet_buffer = m_mesh_buffer_srv->GetDescriptorIndex(),
-            .mesh_vertex_buffer = m_mesh_vertex_buffer_srv->GetDescriptorIndex(),
-            .mesh_triangle_buffer = m_mesh_triangle_buffer_srv->GetDescriptorIndex(),
-            .material_index = m_material_index,
-            .transform_index = m_transform_index,
-            .meshlet_count = m_meshlet_count,
-            .bounding_offset = m_bounding_offset,
-            .should_cull = should_cull,
-            .pass_index = pass_index,
-        };
-        command->PushConstants(&push_constants, sizeof(PushConstants));
-        // const uint32_t num_amp_groups = (m_meshlet_count + 31) / 32;
-        command->DispatchMesh(m_meshlet_count, 1, 1);
-    }
+    void Draw(Swift::ICommand* command, uint32_t index) const;
 };
 
 struct DirectionalLight
@@ -72,7 +43,7 @@ public:
     explicit Renderer(Engine* engine);
     ~Renderer();
 
-    void Update() const;
+    void Update();
     auto* GetContext() const { return m_context; }
     void SetSkybox(Swift::ITexture* texture)
     {
@@ -90,6 +61,7 @@ public:
         auto result = CreateMeshRenderers(model, transform);
         m_transform_buffer->Write(m_transforms.data(), 0, sizeof(glm::mat4) * m_transforms.size());
         m_material_buffer->Write(m_materials.data(), 0, sizeof(Material) * m_materials.size());
+        m_cull_data_buffer->Write(m_cull_data.data(), 0, sizeof(CullData) * m_cull_data.size());
         return result;
     }
 
@@ -109,6 +81,9 @@ private:
     void InitBuffers();
     void InitSkyboxShader();
     void InitPBRShader();
+    void DrawGeometry(Swift::ICommand* command) const;
+    void DrawSkybox(Swift::ICommand* command) const;
+    void InitImgui();
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
 
@@ -123,6 +98,9 @@ private:
 
         uint32_t transform_buffer_index;
         uint32_t material_buffer_index;
+        uint32_t cull_data_buffer_index;
+        uint32_t frustum_buffer_index;
+
         uint32_t point_light_buffer_index;
         uint32_t dir_light_buffer_index;
         uint32_t point_light_count;
@@ -146,11 +124,16 @@ private:
 
     Swift::ITexture* m_depth_texture = nullptr;
     Swift::IDepthStencil* m_depth_stencil = nullptr;
+
     Swift::IBuffer* m_global_constant_buffer = nullptr;
     Swift::IBuffer* m_transform_buffer = nullptr;
     Swift::IBufferSRV* m_transform_buffer_srv = nullptr;
     Swift::IBuffer* m_material_buffer = nullptr;
     Swift::IBufferSRV* m_material_buffer_srv = nullptr;
+    Swift::IBuffer* m_cull_data_buffer = nullptr;
+    Swift::IBufferSRV* m_cull_data_buffer_srv = nullptr;
+    Swift::IBuffer* m_frustum_buffer = nullptr;
+    Swift::IBufferSRV* m_frustum_buffer_srv = nullptr;
     Swift::IBuffer* m_point_light_buffer = nullptr;
     Swift::IBufferSRV* m_point_light_buffer_srv = nullptr;
     Swift::IBuffer* m_dir_light_buffer = nullptr;
@@ -164,5 +147,6 @@ private:
     std::vector<MeshRenderer> m_renderables;
     std::vector<glm::mat4> m_transforms;
     std::vector<Material> m_materials;
+    std::vector<CullData> m_cull_data;
     std::vector<TextureView> m_textures;
 };

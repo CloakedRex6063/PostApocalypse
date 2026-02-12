@@ -1,10 +1,44 @@
 #include "renderer.hpp"
 #include "engine.hpp"
+#include "imgui.h"
+#include "imgui_impl_dx12.h"
 #include "shader_data.hpp"
+#include "imgui_impl_glfw.h"
+#include "d3d12/d3d12_context.hpp"
+
+void MeshRenderer::Draw(Swift::ICommand* command, uint32_t index = 0) const
+{
+    const struct PushConstants
+    {
+        uint32_t vertex_buffer;
+        uint32_t meshlet_buffer;
+        uint32_t mesh_vertex_buffer;
+        uint32_t mesh_triangle_buffer;
+        int material_index;
+        uint32_t transform_index;
+        uint32_t meshlet_count;
+        uint32_t bounding_offset;
+        uint32_t index;
+    } push_constants{
+        .vertex_buffer = m_vertex_buffer_srv->GetDescriptorIndex(),
+        .meshlet_buffer = m_mesh_buffer_srv->GetDescriptorIndex(),
+        .mesh_vertex_buffer = m_mesh_vertex_buffer_srv->GetDescriptorIndex(),
+        .mesh_triangle_buffer = m_mesh_triangle_buffer_srv->GetDescriptorIndex(),
+        .material_index = m_material_index,
+        .transform_index = m_transform_index,
+        .meshlet_count = m_meshlet_count,
+        .bounding_offset = m_bounding_offset,
+        .index = index,
+    };
+    command->PushConstants(&push_constants, sizeof(PushConstants));
+    const uint32_t num_amp_groups = (m_meshlet_count + 31) / 32;
+    command->DispatchMesh(num_amp_groups, 1, 1);
+}
 
 Renderer::Renderer(Engine* engine) : m_engine(engine)
 {
     InitContext();
+    InitImgui();
 
     InitBuffers();
     InitPBRShader();
@@ -29,6 +63,9 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
 
 Renderer::~Renderer()
 {
+    ImGui_ImplDX12_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     if (m_skybox_texture.texture)
     {
         m_context->DestroyTexture(m_skybox_texture.texture);
@@ -37,7 +74,7 @@ Renderer::~Renderer()
     Swift::DestroyContext(m_context);
 }
 
-void Renderer::Update() const
+void Renderer::Update()
 {
     auto* render_target = m_context->GetCurrentRenderTarget();
     auto* command = m_context->GetCurrentCommand();
@@ -54,12 +91,23 @@ void Renderer::Update() const
         .cubemap_index = m_skybox_texture.texture_srv->GetDescriptorIndex(),
         .transform_buffer_index = m_transform_buffer_srv->GetDescriptorIndex(),
         .material_buffer_index = m_material_buffer_srv->GetDescriptorIndex(),
+        .cull_data_buffer_index = m_cull_data_buffer_srv->GetDescriptorIndex(),
+        .frustum_buffer_index = m_frustum_buffer_srv->GetDescriptorIndex(),
         .point_light_buffer_index = m_point_light_buffer_srv->GetDescriptorIndex(),
         .dir_light_buffer_index = m_dir_light_buffer_srv->GetDescriptorIndex(),
         .point_light_count = static_cast<uint32_t>(m_point_lights.size()),
         .dir_light_count = static_cast<uint32_t>(m_dir_lights.size()),
     };
     m_global_constant_buffer->Write(&info, 0, sizeof(GlobalConstantInfo));
+
+    const auto frustum = camera.CreateFrustum();
+    m_frustum_buffer->Write(&frustum, 0, sizeof(Frustum));
+
+    m_dir_light_buffer->Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
+
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
 
     command->Begin();
 
@@ -70,18 +118,34 @@ void Renderer::Update() const
     command->ClearRenderTarget(render_target, { 0.392f, 0.584f, 0.929f, 1.0 });
     command->TransitionResource(m_depth_stencil->GetTexture()->GetResource(), Swift::ResourceState::eDepthWrite);
     command->ClearDepthStencil(m_depth_stencil, 1.f, 0);
-
     command->BindRenderTargets(render_target, m_depth_stencil);
-    command->BindShader(m_skybox_shader);
-    command->BindConstantBuffer(m_global_constant_buffer, 1);
 
-    command->DispatchMesh(1, 1, 1);
+    DrawSkybox(command);
 
-    command->BindShader(m_pbr_shader);
-    for (auto& renderable : m_renderables)
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+
+    DrawGeometry(command);
+
+    ImGui::Begin("Lights");
+    if (ImGui::Button("Add Directional Light"))
     {
-        renderable.Draw(command, false);
+        m_dir_lights.emplace_back();
     }
+
+    for (int i = 0; i < m_dir_lights.size(); ++i)
+    {
+        auto& dir_light = m_dir_lights[i];
+        ImGui::PushID(i);
+        ImGui::DragFloat3("Direction", glm::value_ptr(dir_light.direction));
+        ImGui::DragFloat("Intensity", &dir_light.intensity);
+        ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color));
+        ImGui::PopID();
+    }
+    ImGui::End();
+
+    ImGui::Render();
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
 
     command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::ePresent);
     command->End();
@@ -133,10 +197,10 @@ void Renderer::InitContext()
 void Renderer::InitBuffers()
 {
     m_global_constant_buffer = Swift::BufferBuilder(m_context, 65536).Build();
-    m_transform_buffer = Swift::BufferBuilder(m_context, 1'000'000 * sizeof(glm::mat4)).Build();
+    m_transform_buffer = Swift::BufferBuilder(m_context, 100'000 * sizeof(glm::mat4)).Build();
     m_transform_buffer_srv = m_context->CreateShaderResource(m_transform_buffer,
                                                              Swift::BufferSRVCreateInfo{
-                                                                 .num_elements = 1'000'000,
+                                                                 .num_elements = 100'000,
                                                                  .element_size = sizeof(glm::mat4),
                                                                  .first_element = 0,
                                                              });
@@ -158,6 +222,26 @@ void Renderer::InitBuffers()
                                                                 .num_elements = 10'000,
                                                                 .element_size = sizeof(Material),
                                                             });
+    m_material_buffer = Swift::BufferBuilder(m_context, sizeof(Material) * 10'000).Build();
+    m_material_buffer_srv = m_context->CreateShaderResource(m_material_buffer,
+                                                            Swift::BufferSRVCreateInfo{
+                                                                .num_elements = 10'000,
+                                                                .element_size = sizeof(Material),
+                                                            });
+    m_cull_data_buffer = Swift::BufferBuilder(m_context, 1'000'000 * sizeof(CullData)).Build();
+    m_cull_data_buffer_srv = m_context->CreateShaderResource(m_cull_data_buffer,
+                                                             Swift::BufferSRVCreateInfo{
+                                                                 .num_elements = 1'000'000,
+                                                                 .element_size = sizeof(CullData),
+                                                                 .first_element = 0,
+                                                             });
+    m_frustum_buffer = Swift::BufferBuilder(m_context, sizeof(Frustum) * 5).Build();
+    m_frustum_buffer_srv = m_context->CreateShaderResource(m_frustum_buffer,
+                                                           Swift::BufferSRVCreateInfo{
+                                                               .num_elements = 5,
+                                                               .element_size = sizeof(Frustum),
+                                                               .first_element = 0,
+                                                           });
 }
 
 void Renderer::InitSkyboxShader()
@@ -188,11 +272,25 @@ void Renderer::InitPBRShader()
     std::vector<Swift::Descriptor> descriptors{};
     const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
     descriptors.emplace_back(descriptor);
-    const std::vector<Swift::SamplerDescriptor> samplers{ {} };
+    const std::vector<Swift::SamplerDescriptor> samplers{
+        {},
+        {
+            .min_filter = Swift::Filter::eLinearMipLinear,
+            .mag_filter = Swift::Filter::eLinearMipLinear,
+            .wrap_u = Swift::Wrap::eClampToEdge,
+            .wrap_y = Swift::Wrap::eClampToEdge,
+            .wrap_w = Swift::Wrap::eClampToEdge,
+            .min_lod = 0,
+            .max_lod = 13,
+            .border_color = Swift::BorderColor::eWhite,
+            .comparison_func = Swift::ComparisonFunc::eLessEqual,
+        },
+    };
 
     m_pbr_shader = Swift::GraphicsShaderBuilder(m_context)
                        .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
                        .SetDSVFormat(Swift::Format::eD32F)
+                       .SetAmplificationShader(model_ampl_main_code)
                        .SetMeshShader(model_mesh_main_code)
                        .SetPixelShader(model_pixel_main_code)
                        .SetDepthTestEnable(true)
@@ -312,7 +410,7 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
 
     std::vector<MeshRenderer> renderers;
     renderers.reserve(model.nodes.size());
-    uint32_t bounding_offset = 0;
+    uint32_t bounding_offset = m_cull_data.size();
     for (const auto& node : model.nodes)
     {
         const auto& mesh = model.meshes[node.mesh_index];
@@ -346,9 +444,144 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
 
         bounding_offset += mesh.meshlets.size();
     }
-
+    m_cull_data.insert_range(m_cull_data.end(), model.cull_datas);
     auto offset = static_cast<uint32_t>(m_renderables.size());
     auto size = renderers.size();
-    m_renderables.insert(m_renderables.end(), renderers.begin(), renderers.end());
+    m_renderables.insert_range(m_renderables.end(), renderers);
     return { offset, size };
+}
+
+void Renderer::DrawGeometry(Swift::ICommand* command) const
+{
+    auto* render_target = m_context->GetCurrentRenderTarget();
+    command->BindRenderTargets(render_target, m_depth_stencil);
+    command->BindShader(m_pbr_shader);
+    for (const auto& renderable : m_renderables)
+    {
+        renderable.Draw(command);
+    }
+}
+
+void Renderer::DrawSkybox(Swift::ICommand* command) const
+{
+    command->BindShader(m_skybox_shader);
+    command->BindConstantBuffer(m_global_constant_buffer, 1);
+    command->DispatchMesh(1, 1, 1);
+}
+
+void Renderer::InitImgui()
+{
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    ImGui_ImplGlfw_InitForOther(m_engine->GetWindow().GetHandle(), true);
+
+    const auto* dx_context = static_cast<Swift::D3D12::Context*>(m_context);
+    auto* srv_heap = dx_context->GetCBVSRVUAVHeap();
+
+    ImGui_ImplDX12_InitInfo init_info = {};
+    init_info.Device = static_cast<ID3D12Device*>(m_context->GetDevice());
+    init_info.CommandQueue = static_cast<ID3D12CommandQueue*>(m_context->GetGraphicsQueue()->GetQueue());
+    init_info.NumFramesInFlight = 1;
+    init_info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+    init_info.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    init_info.UserData = srv_heap;
+    init_info.SrvDescriptorHeap = srv_heap->GetHeap();
+    init_info.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* info,
+                                        D3D12_CPU_DESCRIPTOR_HANDLE* out_cpu_handle,
+                                        D3D12_GPU_DESCRIPTOR_HANDLE* out_gpu_handle)
+    {
+        auto* srv_heap = static_cast<Swift::D3D12::DescriptorHeap*>(info->UserData);
+        const auto descriptor = srv_heap->Allocate();
+        out_cpu_handle->ptr = descriptor.cpu_handle.ptr;
+        out_gpu_handle->ptr = descriptor.gpu_handle.ptr;
+    };
+    init_info.SrvDescriptorFreeFn =
+        [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
+    {
+        auto* srv_heap = static_cast<Swift::D3D12::DescriptorHeap*>(info->UserData);
+        const uint32_t index = (cpu_handle.ptr - srv_heap->GetCpuBaseHandle().ptr) / srv_heap->GetStride();
+        srv_heap->Free(Swift::D3D12::DescriptorData{ .cpu_handle = cpu_handle, .gpu_handle = gpu_handle, .index = index });
+    };
+    ImGui_ImplDX12_Init(&init_info);
+
+    ImVec4* colors = ImGui::GetStyle().Colors;
+    colors[ImGuiCol_Text] = ImVec4(1.00f, 1.00f, 1.00f, 1.00f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
+    colors[ImGuiCol_WindowBg] = ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
+    colors[ImGuiCol_ChildBg] = ImVec4(0.16f, 0.16f, 0.16f, 0.50f);
+    colors[ImGuiCol_PopupBg] = ImVec4(0.19f, 0.19f, 0.19f, 0.92f);
+    colors[ImGuiCol_Border] = ImVec4(0.19f, 0.19f, 0.19f, 0.29f);
+    colors[ImGuiCol_BorderShadow] = ImVec4(0.00f, 0.00f, 0.00f, 0.24f);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.05f, 0.05f, 0.05f, 0.54f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.19f, 0.19f, 0.19f, 0.54f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(0.20f, 0.22f, 0.23f, 1.00f);
+    colors[ImGuiCol_TitleBg] = ImVec4(0.00f, 0.00f, 0.00f, 1.00f);
+    colors[ImGuiCol_TitleBgActive] = ImVec4(0.06f, 0.06f, 0.06f, 1.00f);
+    colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.00f, 0.00f, 0.00f, 1.00f);
+    colors[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(0.259f, 0.588f, 0.980f, 1.000f);
+    colors[ImGuiCol_MenuBarBg] = ImVec4(0.06f, 0.06f, 0.06f, 1.00f);
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0.05f, 0.05f, 0.05f, 0.54f);
+    colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.34f, 0.34f, 0.34f, 0.54f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.40f, 0.40f, 0.40f, 0.54f);
+    colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.56f, 0.56f, 0.56f, 0.54f);
+    colors[ImGuiCol_CheckMark] = ImVec4(0.33f, 0.67f, 0.86f, 1.00f);
+    colors[ImGuiCol_SliderGrab] = ImVec4(0.34f, 0.34f, 0.34f, 0.54f);
+    colors[ImGuiCol_SliderGrabActive] = ImVec4(0.56f, 0.56f, 0.56f, 0.54f);
+    colors[ImGuiCol_Button] = ImVec4(0.05f, 0.05f, 0.05f, 0.54f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.19f, 0.19f, 0.19f, 0.54f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(0.20f, 0.22f, 0.23f, 1.00f);
+    colors[ImGuiCol_Header] = ImVec4(0.00f, 0.00f, 0.00f, 0.52f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.00f, 0.00f, 0.00f, 0.36f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(0.20f, 0.22f, 0.23f, 0.33f);
+    colors[ImGuiCol_Separator] = ImVec4(0.28f, 0.28f, 0.28f, 0.29f);
+    colors[ImGuiCol_SeparatorHovered] = ImVec4(0.44f, 0.44f, 0.44f, 0.29f);
+    colors[ImGuiCol_SeparatorActive] = ImVec4(0.40f, 0.44f, 0.47f, 1.00f);
+    colors[ImGuiCol_ResizeGrip] = ImVec4(0.28f, 0.28f, 0.28f, 0.29f);
+    colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.44f, 0.44f, 0.44f, 0.29f);
+    colors[ImGuiCol_ResizeGripActive] = ImVec4(0.40f, 0.44f, 0.47f, 1.00f);
+    colors[ImGuiCol_Tab] = ImVec4(0.20f, 0.20f, 0.20f, 0.52f);
+    colors[ImGuiCol_TabHovered] = ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
+    colors[ImGuiCol_DockingPreview] = ImVec4(0.33f, 0.67f, 0.86f, 1.00f);
+    colors[ImGuiCol_PlotLines] = ImVec4(1.00f, 0.00f, 0.00f, 1.00f);
+    colors[ImGuiCol_PlotLinesHovered] = ImVec4(1.00f, 0.00f, 0.00f, 1.00f);
+    colors[ImGuiCol_PlotHistogram] = ImVec4(1.00f, 0.00f, 0.00f, 1.00f);
+    colors[ImGuiCol_PlotHistogramHovered] = ImVec4(1.00f, 0.00f, 0.00f, 1.00f);
+    colors[ImGuiCol_TableHeaderBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.52f);
+    colors[ImGuiCol_TableBorderStrong] = ImVec4(0.00f, 0.00f, 0.00f, 0.52f);
+    colors[ImGuiCol_TableBorderLight] = ImVec4(0.28f, 0.28f, 0.28f, 0.29f);
+    colors[ImGuiCol_TableRowBg] = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+    colors[ImGuiCol_TableRowBgAlt] = ImVec4(1.00f, 1.00f, 1.00f, 0.06f);
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(0.20f, 0.22f, 0.23f, 1.00f);
+    colors[ImGuiCol_DragDropTarget] = ImVec4(0.33f, 0.67f, 0.86f, 1.00f);
+    colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.00f, 0.00f, 0.00f, 0.70f);
+    colors[ImGuiCol_NavWindowingDimBg] = ImVec4(1.00f, 0.00f, 0.00f, 0.20f);
+    colors[ImGuiCol_ModalWindowDimBg] = ImVec4(1.00f, 0.00f, 0.00f, 0.35f);
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding = ImVec2(5.00f, 0.00f);
+    style.FramePadding = ImVec2(4.00f, 4.00f);
+    style.CellPadding = ImVec2(4.00f, 4.00f);
+    style.ItemSpacing = ImVec2(6.00f, 6.00f);
+    style.ItemInnerSpacing = ImVec2(6.00f, 6.00f);
+    style.TouchExtraPadding = ImVec2(0.00f, 0.00f);
+    style.IndentSpacing = 25;
+    style.ScrollbarSize = 15;
+    style.GrabMinSize = 10;
+    style.WindowBorderSize = 1;
+    style.ChildBorderSize = 1;
+    style.PopupBorderSize = 1;
+    style.FrameBorderSize = 1;
+    style.TabBorderSize = 1;
+    style.WindowRounding = 7;
+    style.ChildRounding = 4;
+    style.FrameRounding = 3;
+    style.PopupRounding = 4;
+    style.ScrollbarRounding = 9;
+    style.GrabRounding = 3;
+    style.LogSliderDeadzone = 4;
+    style.TabRounding = 4;
 }

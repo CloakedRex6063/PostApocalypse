@@ -9,10 +9,15 @@ cbuffer GlobalConstantBuffer : register(b1)
 
     uint transform_buffer_index;
     uint material_buffer_index;
+    uint bounding_buffer_index;
+    uint frustum_buffer_index;
+
     uint point_light_buffer_index;
     uint dir_light_buffer_index;
     uint point_light_count;
     uint dir_light_count;
+
+    uint cascade_buffer_index;
 } GlobalConstants;
 
 struct Meshlet
@@ -21,6 +26,15 @@ struct Meshlet
     uint triangle_offset;
     uint vertex_count;
     uint triangle_count;
+};
+
+struct Vertex
+{
+    float3 position;
+    float uv_x;
+    float3 normal;
+    float uv_y;
+    float4 tangent;
 };
 
 struct Material
@@ -41,14 +55,9 @@ struct Material
     uint alpha_mode;
 };
 
-struct PushConstant
+struct Cascade
 {
-    uint vertex_buffer_index;
-    uint mesh_buffer_index;
-    uint mesh_vertex_buffer_index;
-    uint mesh_triangle_buffer_index;
-    uint material_index;
-    uint transform_index;
+    float4x4 view_proj;
+    float split_depth;
+    float3 padding;
 };
-
-ConstantBuffer<PushConstant> PushConstants : register(b0);

@@ -1,12 +1,44 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "camera.hpp"
-
 #include "engine.hpp"
 #include "input.hpp"
-#include "glm/detail/type_quat.hpp"
-#include "glm/ext/matrix_clip_space.hpp"
-#include "glm/ext/matrix_transform.hpp"
-#include "glm/gtx/quaternion.hpp"
+
+glm::vec4 NormalizePlane(const glm::vec4 p)
+{
+    const float len = glm::length(glm::vec3(p));
+    return p / len;
+}
+
+Frustum Camera::CreateFrustum() const
+{
+    auto vp = m_proj_matrix * m_view_matrix;
+    vp = glm::transpose(vp);
+    const Frustum frustum{ .planes = {
+                               NormalizePlane(vp[3] + vp[0]),  // Left
+                               NormalizePlane(vp[3] - vp[0]),  // Right
+                               NormalizePlane(vp[3] + vp[1]),  // Bottom
+                               NormalizePlane(vp[3] - vp[1]),  // Top
+                               NormalizePlane(vp[2]),          // Near  (0-1 depth range)
+                               NormalizePlane(vp[3] - vp[2]),  // Far
+                           } };
+
+    return frustum;
+}
+
+Frustum Camera::CreateFrustum(const glm::mat4& view_proj)
+{
+    auto vp = glm::transpose(view_proj);
+    const Frustum frustum{ .planes = {
+                               NormalizePlane(vp[3] + vp[0]),  // Left
+                               NormalizePlane(vp[3] - vp[0]),  // Right
+                               NormalizePlane(vp[3] + vp[1]),  // Bottom
+                               NormalizePlane(vp[3] - vp[1]),  // Top
+                               NormalizePlane(vp[2]),          // Near  (0-1 depth range)
+                               NormalizePlane(vp[3] - vp[2]),  // Far
+                           } };
+
+    return frustum;
+}
 
 void Camera::Update(const float delta_time)
 {

@@ -60,6 +60,8 @@ def compile_to_dxil(shader_path: Path, entry_point: str, stage: str) -> bytes:
         "-entry", entry_point,
         "-target", "dxil",
         "-profile", profile,
+        "-g",
+        "-O0",
         "-o", str(dxil_path),
     ]
 

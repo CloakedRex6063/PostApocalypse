@@ -1,29 +1,68 @@
 #include "common.slang"
 #include "lights.slang"
+#include "cull.slang"
 
-struct Vertex
+struct PushConstant
 {
-    float3 position;
-    float uv_x;
-    float3 normal;
-    float uv_y;
-    float4 tangent;
+    uint vertex_buffer_index;
+    uint mesh_buffer_index;
+    uint mesh_vertex_buffer_index;
+    uint mesh_triangle_buffer_index;
+
+    uint material_index;
+    uint transform_index;
+    uint meshlet_count;
+    uint bounding_offset;
 };
+
+ConstantBuffer<PushConstant> PushConstants : register(b0);
 
 struct OutVertex
 {
     float4 position : SV_POSITION;
     float3 world_pos : POSITION;
+    float3 view_pos : POSITION1;
     float2 uv : TEXCOORD0;
     float3 normal : NORMAL;
     float4 tangent : TANGENT;
 };
+
+[numthreads(32, 1, 1)]
+[shader("amplification")]
+void ampl_main(uint dtid: SV_DispatchThreadID, uint gtid: SV_GroupThreadID, uint gid: SV_GroupID)
+{
+    bool visible = false;
+
+    if (dtid < PushConstants.meshlet_count)
+    {
+        var transform_buffer = DescriptorHandle<StructuredBuffer<float4x4>>(GlobalConstants.transform_buffer_index);
+        var transform = transform_buffer[PushConstants.transform_index];
+        var frustum_buffer = DescriptorHandle<StructuredBuffer<Frustum>>(GlobalConstants.frustum_buffer_index);
+        var bounding_buffer = DescriptorHandle<StructuredBuffer<CullData>>(GlobalConstants.bounding_buffer_index);
+        var cull_data = bounding_buffer[dtid + PushConstants.bounding_offset];
+        visible = IsVisibleAfterFrustumCull(frustum_buffer[0], cull_data, transform, GlobalConstants.cam_pos);
+    }
+    else
+    {
+        visible = false;
+    }
+
+    if (visible)
+    {
+        uint index = WavePrefixCountBits(visible);
+        s_Payload.meshlet_index[index] = dtid;
+    }
+
+    uint visible_count = WaveActiveCountBits(visible);
+    DispatchMesh(visible_count, 1, 1, s_Payload);
+}
 
 [outputtopology("triangle")]
 [numthreads(128, 1, 1)]
 [shader("mesh")]
 void mesh_main(uint gtid: SV_GroupThreadID,
                uint gid: SV_GroupID,
+               in payload TaskPayload payload,
                OutputVertices<OutVertex, 64> verts,
                OutputIndices<uint3, 124> triangles)
 {
@@ -32,7 +71,9 @@ void mesh_main(uint gtid: SV_GroupThreadID,
     var mesh_vertex_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_vertex_buffer_index);
     var mesh_triangle_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_triangle_buffer_index);
     var transform_buffer = DescriptorHandle<StructuredBuffer<float4x4>>(GlobalConstants.transform_buffer_index);
-    Meshlet meshlet = meshlet_buffer[gid];
+
+    uint meshlet_index = payload.meshlet_index[gid];
+    Meshlet meshlet = meshlet_buffer[meshlet_index];
     SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);
 
     if (gtid < meshlet.triangle_count)
@@ -52,6 +93,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
         float4 world_pos = mul(transform_buffer[PushConstants.transform_index], float4(vertex.position, 1.0));
         verts[gtid].position = mul(GlobalConstants.view_proj, world_pos);
         verts[gtid].world_pos = world_pos.xyz;
+        verts[gtid].view_pos = mul(GlobalConstants.view, world_pos).xyz;
         verts[gtid].normal = vertex.normal;
         verts[gtid].uv = float2(vertex.uv_x, vertex.uv_y);
         verts[gtid].tangent = vertex.tangent;
@@ -59,6 +101,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 }
 
 SamplerState samp : register(s0);
+SamplerComparisonState shadow_comparison : register(s1);
 
 [shader("pixel")]
 float4 pixel_main(OutVertex input) : SV_TARGET
@@ -120,7 +163,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
         lo += ApplyLight(n, h, v, l, f0, albedo, radiance, roughness, metallic);
     };
 
-    float3 ambient = float3(0.03, 0.03, 0.03) * albedo * occlusion;
+    float3 ambient = float3(0.2, 0.2, 0.2) * albedo * occlusion;
     float3 color = ambient + lo + emissive;
     color = color / (color + float3(1.0, 1.0, 1.0));
     return float4(color, 1.0);

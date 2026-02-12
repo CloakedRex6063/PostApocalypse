@@ -1,13 +1,19 @@
 #pragma once
 #include "input.hpp"
-#include "glm/mat4x4.hpp"
-#include "glm/trigonometric.hpp"
 
 class Engine;
+
+struct Frustum
+{
+    std::array<glm::vec4, 6> planes;
+};
+
 class Camera
 {
 public:
     Camera(Engine* engine) : m_engine(engine) {}
+    Frustum CreateFrustum() const;
+    static Frustum CreateFrustum(const glm::mat4& view_proj);
     void Update(float delta_time);
 
     float m_aspect_ratio = 16.f / 9.f;

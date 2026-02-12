@@ -1,7 +1,6 @@
 #pragma once
 #include "unordered_map"
 #include "window.hpp"
-#include "glm/vec2.hpp"
 
 enum class KeyboardKey
 {
