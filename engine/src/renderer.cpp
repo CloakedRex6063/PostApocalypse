@@ -6,31 +6,8 @@
 #include "imgui_impl_glfw.h"
 #include "d3d12/d3d12_context.hpp"
 
-void MeshRenderer::Draw(Swift::ICommand* command, uint32_t index = 0) const
+void MeshRenderer::Draw(Swift::ICommand* command) const
 {
-    const struct PushConstants
-    {
-        uint32_t vertex_buffer;
-        uint32_t meshlet_buffer;
-        uint32_t mesh_vertex_buffer;
-        uint32_t mesh_triangle_buffer;
-        int material_index;
-        uint32_t transform_index;
-        uint32_t meshlet_count;
-        uint32_t bounding_offset;
-        uint32_t index;
-    } push_constants{
-        .vertex_buffer = m_vertex_buffer_srv->GetDescriptorIndex(),
-        .meshlet_buffer = m_mesh_buffer_srv->GetDescriptorIndex(),
-        .mesh_vertex_buffer = m_mesh_vertex_buffer_srv->GetDescriptorIndex(),
-        .mesh_triangle_buffer = m_mesh_triangle_buffer_srv->GetDescriptorIndex(),
-        .material_index = m_material_index,
-        .transform_index = m_transform_index,
-        .meshlet_count = m_meshlet_count,
-        .bounding_offset = m_bounding_offset,
-        .index = index,
-    };
-    command->PushConstants(&push_constants, sizeof(PushConstants));
     const uint32_t num_amp_groups = (m_meshlet_count + 31) / 32;
     command->DispatchMesh(num_amp_groups, 1, 1);
 }
@@ -191,16 +168,16 @@ void Renderer::InitContext()
                           .Build();
     m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
     m_texture_heap = m_context->CreateHeap(
-        Swift::HeapCreateInfo{ .type = Swift::HeapType::eGPU_Upload, .size = 1'000'000'000, .debug_name = "Texture Heap" });
+        Swift::HeapCreateInfo{ .type = Swift::HeapType::eGPU_Upload, .size = 2'500'000'000, .debug_name = "Texture Heap" });
 }
 
 void Renderer::InitBuffers()
 {
     m_global_constant_buffer = Swift::BufferBuilder(m_context, 65536).Build();
-    m_transform_buffer = Swift::BufferBuilder(m_context, 100'000 * sizeof(glm::mat4)).Build();
+    m_transform_buffer = Swift::BufferBuilder(m_context, 10'000 * sizeof(glm::mat4)).Build();
     m_transform_buffer_srv = m_context->CreateShaderResource(m_transform_buffer,
                                                              Swift::BufferSRVCreateInfo{
-                                                                 .num_elements = 100'000,
+                                                                 .num_elements = 10'000,
                                                                  .element_size = sizeof(glm::mat4),
                                                                  .first_element = 0,
                                                              });
@@ -456,8 +433,34 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
     auto* render_target = m_context->GetCurrentRenderTarget();
     command->BindRenderTargets(render_target, m_depth_stencil);
     command->BindShader(m_pbr_shader);
+
     for (const auto& renderable : m_renderables)
     {
+        const struct PushConstants
+        {
+            uint32_t vertex_buffer;
+            uint32_t meshlet_buffer;
+            uint32_t mesh_vertex_buffer;
+            uint32_t mesh_triangle_buffer;
+
+            int material_index;
+            uint32_t transform_index;
+            uint32_t meshlet_count;
+            uint32_t bounding_offset;
+
+            uint32_t ibl_index;
+        } push_constants{
+            .vertex_buffer = renderable.m_vertex_buffer_srv->GetDescriptorIndex(),
+            .meshlet_buffer = renderable.m_mesh_buffer_srv->GetDescriptorIndex(),
+            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer_srv->GetDescriptorIndex(),
+            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer_srv->GetDescriptorIndex(),
+            .material_index = renderable.m_material_index,
+            .transform_index = renderable.m_transform_index,
+            .meshlet_count = renderable.m_meshlet_count,
+            .bounding_offset = renderable.m_bounding_offset,
+            .ibl_index = m_specular_ibl_texture.texture_srv->GetDescriptorIndex(),
+        };
+        command->PushConstants(&push_constants, sizeof(PushConstants));
         renderable.Draw(command);
     }
 }

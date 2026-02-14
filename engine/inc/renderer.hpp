@@ -18,7 +18,7 @@ struct MeshRenderer
     uint32_t m_transform_index;
     uint32_t m_bounding_offset;
 
-    void Draw(Swift::ICommand* command, uint32_t index) const;
+    void Draw(Swift::ICommand* command) const;
 };
 
 struct DirectionalLight
@@ -45,7 +45,7 @@ public:
 
     void Update();
     auto* GetContext() const { return m_context; }
-    void SetSkybox(Swift::ITexture* texture)
+    void SetSkybox(Swift::ITexture* texture, Swift::ITexture* ibl_texture)
     {
         if (m_skybox_texture.texture)
         {
@@ -55,6 +55,15 @@ public:
         }
         m_skybox_texture.texture = texture;
         m_skybox_texture.texture_srv = m_context->CreateShaderResource(m_skybox_texture.texture);
+
+        if (m_specular_ibl_texture.texture)
+        {
+            m_context->GetGraphicsQueue()->WaitIdle();
+            m_context->DestroyTexture(m_specular_ibl_texture.texture);
+            m_context->DestroyShaderResource(m_specular_ibl_texture.texture_srv);
+        }
+        m_specular_ibl_texture.texture = ibl_texture;
+        m_specular_ibl_texture.texture_srv = m_context->CreateShaderResource(m_specular_ibl_texture.texture);
     }
     std::tuple<uint32_t, uint32_t> AddRenderables(Model& model, const glm::mat4& transform)
     {
@@ -121,6 +130,7 @@ private:
     TextureView m_dummy_white_texture;
     TextureView m_dummy_black_texture;
     TextureView m_dummy_normal_texture;
+    TextureView m_specular_ibl_texture;
 
     Swift::ITexture* m_depth_texture = nullptr;
     Swift::IDepthStencil* m_depth_stencil = nullptr;

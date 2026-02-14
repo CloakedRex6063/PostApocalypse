@@ -444,10 +444,14 @@ std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path)
 
     Model m{};
 
+    std::vector<std::pair<uint32_t, uint32_t>> mesh_ranges;
+
     for (auto& mesh : asset->meshes)
     {
+        uint32_t start = static_cast<uint32_t>(m.meshes.size());
         auto meshes = LoadMesh(m, asset.get(), mesh);
         m.meshes.insert(m.meshes.end(), meshes.begin(), meshes.end());
+        mesh_ranges.push_back({ start, static_cast<uint32_t>(meshes.size()) });
     }
 
     for (auto& texture : asset->textures)
@@ -468,7 +472,7 @@ std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path)
         m.samplers.emplace_back(samp);
     }
 
-    std::tie(m.nodes, m.transforms) = LoadNodes(asset.get());
+    std::tie(m.nodes, m.transforms) = LoadNodes(asset.get(), mesh_ranges);
 
     auto actor = m_engine->GetScene().AddActor<Actor>();
     actor->AddModel(m);
@@ -539,7 +543,9 @@ std::vector<uint32_t> Resources::LoadIndices(const fastgltf::Asset& asset, const
     return indices;
 }
 
-std::tuple<std::vector<Node>, std::vector<glm::mat4>> Resources::LoadNodes(const fastgltf::Asset& asset)
+std::tuple<std::vector<Node>, std::vector<glm::mat4>> Resources::LoadNodes(
+    const fastgltf::Asset& asset,
+    const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges)
 {
     std::vector<Node> nodes;
     std::vector<glm::mat4> transforms;
@@ -547,7 +553,7 @@ std::tuple<std::vector<Node>, std::vector<glm::mat4>> Resources::LoadNodes(const
     const auto& scene = asset.scenes[asset.defaultScene.value_or(0)];
     for (const auto& nodeIndex : scene.nodeIndices)
     {
-        LoadNode(asset, nodeIndex, glm::mat4(1.0f), nodes, transforms);
+        LoadNode(asset, nodeIndex, glm::mat4(1.0f), nodes, transforms, mesh_ranges);
     }
 
     return { nodes, transforms };
@@ -557,7 +563,8 @@ void Resources::LoadNode(const fastgltf::Asset& asset,
                          const size_t node_index,
                          const glm::mat4& parent_transform,
                          std::vector<Node>& nodes,
-                         std::vector<glm::mat4>& transforms)
+                         std::vector<glm::mat4>& transforms,
+                         const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges)
 {
     const fastgltf::Node& node = asset.nodes[node_index];
 
@@ -568,16 +575,20 @@ void Resources::LoadNode(const fastgltf::Asset& asset,
 
     if (node.meshIndex.has_value())
     {
-        nodes.push_back(Node{
-            .name = std::string(node.name),
-            .transform_index = transform_idx,
-            .mesh_index = static_cast<int>(node.meshIndex.value()),
-        });
+        auto [start, count] = mesh_ranges[node.meshIndex.value()];
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            nodes.push_back(Node{
+                .name = std::string(node.name),
+                .transform_index = transform_idx,
+                .mesh_index = static_cast<int>(start + i),
+            });
+        }
     }
 
     for (const size_t child : node.children)
     {
-        LoadNode(asset, child, world_transform, nodes, transforms);
+        LoadNode(asset, child, world_transform, nodes, transforms, mesh_ranges);
     }
 }
 

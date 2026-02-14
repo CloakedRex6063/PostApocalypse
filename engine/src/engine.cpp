@@ -9,16 +9,16 @@ Engine::Engine()
     m_resources = std::make_unique<Resources>(this);
     m_scene = std::make_unique<Scene>(this);
 
-    m_renderer->SetSkybox(m_resources->LoadTexture("assets/skybox/sky.dds"));
+    auto* skybox_texture = m_resources->LoadTexture("assets/skybox/sky.dds");
+    auto* ibl_texture = m_resources->LoadTexture("assets/skybox/sky_specular.dds");
+    m_renderer->SetSkybox(skybox_texture, ibl_texture);
     m_renderer->AddDirectionalLight(DirectionalLight{
         .direction = glm::normalize(glm::vec3(-0.5f, -0.3f, -0.8f)),
         .intensity = 1.f,
         .color = glm::vec3(1.0f, 0.95f, 0.8f),
         .cast_shadows = true,
     });
-    m_resources->LoadModel("assets/cathedral/cathedral.gltf");
+    m_resources->LoadModel("assets/chess/chess.gltf");
 }
 
-Engine::~Engine()
-{
-}
+Engine::~Engine() {}

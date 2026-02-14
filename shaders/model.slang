@@ -9,10 +9,12 @@ struct PushConstant
     uint mesh_vertex_buffer_index;
     uint mesh_triangle_buffer_index;
 
-    uint material_index;
+    int material_index;
     uint transform_index;
     uint meshlet_count;
     uint bounding_offset;
+
+    uint ibl_index;
 };
 
 ConstantBuffer<PushConstant> PushConstants : register(b0);
@@ -87,16 +89,17 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 
     if (gtid < meshlet.vertex_count)
     {
+        var transform = transform_buffer[PushConstants.transform_index];
         uint vertex_index = meshlet.vertex_offset + gtid;
         vertex_index = mesh_vertex_buffer[vertex_index];
         Vertex vertex = vertex_buffer[vertex_index];
-        float4 world_pos = mul(transform_buffer[PushConstants.transform_index], float4(vertex.position, 1.0));
+        float4 world_pos = mul(transform, float4(vertex.position, 1.0));
         verts[gtid].position = mul(GlobalConstants.view_proj, world_pos);
         verts[gtid].world_pos = world_pos.xyz;
         verts[gtid].view_pos = mul(GlobalConstants.view, world_pos).xyz;
-        verts[gtid].normal = vertex.normal;
+        verts[gtid].normal = mul(transform, float4(vertex.normal, 1.0)).rgb;
         verts[gtid].uv = float2(vertex.uv_x, vertex.uv_y);
-        verts[gtid].tangent = vertex.tangent;
+        verts[gtid].tangent = mul(transform, vertex.tangent);
     }
 }
 
@@ -115,10 +118,10 @@ float4 pixel_main(OutVertex input) : SV_TARGET
 
     float metallic = material.metallic;
     float roughness = material.roughness;
-    var metal_rough_texture = DescriptorHandle<Texture2D>(uint(material.metal_rough_index));
-    float3 mr = metal_rough_texture.Sample(samp, input.uv).rgb;
-    metallic *= mr.g;
-    roughness *= mr.b;
+    var metal_rough_texture = DescriptorHandle<Texture2D<float4>>(uint(material.metal_rough_index));
+    float4 mr = metal_rough_texture.Sample(samp, input.uv);
+    roughness *= mr.g;
+    metallic *= mr.b;
 
     float3 emissive = material.emissive;
     var emissive_texture = DescriptorHandle<Texture2D>(uint(material.emissive_index));
@@ -146,11 +149,10 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     {
         PointLight point_light = point_light_buffer[i];
         float3 l = normalize(point_light.position - world_pos);
-        float3 h = normalize(v + l);
         float distance = length(point_light.position - world_pos);
         float attenuation = 1.0 / (distance * distance);
         float3 radiance = point_light.color * point_light.intensity * attenuation;
-        lo += ApplyLight(n, h, v, l, f0, albedo, radiance, roughness, metallic);
+        lo += ApplyLight(n, v, l, f0, albedo, radiance, roughness, metallic);
     };
 
     var dir_light_buffer = DescriptorHandle<StructuredBuffer<DirectionalLight>>(GlobalConstants.dir_light_buffer_index);
@@ -158,13 +160,12 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     {
         DirectionalLight dir_light = dir_light_buffer[i];
         float3 l = normalize(dir_light.direction);
-        float3 h = normalize(v + l);
         float3 radiance = dir_light.color * dir_light.intensity;
-        lo += ApplyLight(n, h, v, l, f0, albedo, radiance, roughness, metallic);
+        lo += ApplyLight(n, v, l, f0, albedo, radiance, roughness, metallic);
     };
 
-    float3 ambient = float3(0.2, 0.2, 0.2) * albedo * occlusion;
-    float3 color = ambient + lo + emissive;
+    float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, PushConstants.ibl_index, samp);
+    float3 color = ibl + lo + emissive;
     color = color / (color + float3(1.0, 1.0, 1.0));
     return float4(color, 1.0);
 }

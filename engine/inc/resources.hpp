@@ -117,8 +117,11 @@ private:
                   size_t node_index,
                   const glm::mat4& parent_transform,
                   std::vector<Node>& nodes,
-                  std::vector<glm::mat4>& transforms);
-    std::tuple<std::vector<Node>, std::vector<glm::mat4>> LoadNodes(const fastgltf::Asset& asset);
+                  std::vector<glm::mat4>& transforms,
+                  const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges);
+    std::tuple<std::vector<Node>, std::vector<glm::mat4>> LoadNodes(
+        const fastgltf::Asset& asset,
+        const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges);
     static std::vector<uint32_t> LoadIndices(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive);
     static std::vector<Vertex> LoadVertices(const fastgltf::Asset& asset,
                                      const fastgltf::Primitive& primitive,
