@@ -229,7 +229,8 @@ Texture Resources::LoadTexture(const fastgltf::Asset& asset, const fastgltf::Tex
                                {
                                    const auto header = dds::read_header(array.bytes.data(), sizeof(dds::Header));
                                    pixels.resize(header.data_size());
-                                   const auto *start = reinterpret_cast<const uint8_t*>(array.bytes.data() + header.data_offset());
+                                   const auto* start =
+                                       reinterpret_cast<const uint8_t*>(array.bytes.data() + header.data_offset());
                                    pixels.assign(start, start + header.data_size());
 
                                    width = header.width();
@@ -417,7 +418,7 @@ Sampler Resources::LoadSampler(const fastgltf::Sampler& sampler)
     return s;
 }
 
-std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path)
+std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path, const glm::vec3 scale)
 {
     constexpr auto extensions = fastgltf::Extensions::KHR_materials_transmission | fastgltf::Extensions::KHR_materials_volume |
                                 fastgltf::Extensions::KHR_materials_specular |
@@ -472,7 +473,7 @@ std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path)
         m.samplers.emplace_back(samp);
     }
 
-    std::tie(m.nodes, m.transforms) = LoadNodes(asset.get(), mesh_ranges);
+    std::tie(m.nodes, m.transforms) = LoadNodes(asset.get(), mesh_ranges, scale);
 
     auto actor = m_engine->GetScene().AddActor<Actor>();
     actor->AddModel(m);
@@ -545,7 +546,8 @@ std::vector<uint32_t> Resources::LoadIndices(const fastgltf::Asset& asset, const
 
 std::tuple<std::vector<Node>, std::vector<glm::mat4>> Resources::LoadNodes(
     const fastgltf::Asset& asset,
-    const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges)
+    const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges,
+    const glm::vec3 scale)
 {
     std::vector<Node> nodes;
     std::vector<glm::mat4> transforms;
@@ -553,7 +555,7 @@ std::tuple<std::vector<Node>, std::vector<glm::mat4>> Resources::LoadNodes(
     const auto& scene = asset.scenes[asset.defaultScene.value_or(0)];
     for (const auto& nodeIndex : scene.nodeIndices)
     {
-        LoadNode(asset, nodeIndex, glm::mat4(1.0f), nodes, transforms, mesh_ranges);
+        LoadNode(asset, nodeIndex, glm::scale(glm::mat4(1.0f), scale), nodes, transforms, mesh_ranges);
     }
 
     return { nodes, transforms };

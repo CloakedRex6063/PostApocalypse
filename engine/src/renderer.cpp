@@ -423,7 +423,7 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
     }
     m_cull_data.insert_range(m_cull_data.end(), model.cull_datas);
     auto offset = static_cast<uint32_t>(m_renderables.size());
-    auto size = renderers.size();
+    auto size = static_cast<uint32_t>(renderers.size());
     m_renderables.insert_range(m_renderables.end(), renderers);
     return { offset, size };
 }

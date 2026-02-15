@@ -20,7 +20,7 @@ CPMAddPackage(
 CPMAddPackage(
         NAME SWIFT
         GITHUB_REPOSITORY CloakedRex6063/SwiftRender
-        GIT_TAG 328fe970
+        GIT_TAG 9914d93
 )
 CPMAddPackage(
         NAME fastgltf
@@ -80,9 +80,9 @@ CPMAddPackage(
         GIT_TAG master
 )
 
-if(stb_ADDED)
+if (stb_ADDED)
     add_library(stb INTERFACE)
     target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
-endif()
+endif ()
 
 target_link_libraries(Engine PUBLIC glfw meshoptimizer glm imgui imgui-dx12 imgui-glfw Swift dds fastgltf::fastgltf mikktspace stb)
