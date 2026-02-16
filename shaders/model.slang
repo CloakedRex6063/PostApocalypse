@@ -23,7 +23,7 @@ struct OutVertex
 {
     float4 position : SV_POSITION;
     float3 world_pos : POSITION;
-    float3 view_pos : POSITION1;
+    float4 light_space_pos : POSITION1;
     float2 uv : TEXCOORD0;
     float3 normal : NORMAL;
     float4 tangent : TANGENT;
@@ -96,7 +96,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
         float4 world_pos = mul(transform, float4(vertex.position, 1.0));
         verts[gtid].position = mul(GlobalConstants.view_proj, world_pos);
         verts[gtid].world_pos = world_pos.xyz;
-        verts[gtid].view_pos = mul(GlobalConstants.view, world_pos).xyz;
+        verts[gtid].light_space_pos = mul(GlobalConstants.sun_view_proj, world_pos);
         verts[gtid].normal = mul(transform, float4(vertex.normal, 1.0)).rgb;
         verts[gtid].uv = float2(vertex.uv_x, vertex.uv_y);
         verts[gtid].tangent = mul(transform, vertex.tangent);
@@ -104,7 +104,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 }
 
 SamplerState samp : register(s0);
-SamplerComparisonState shadow_comparison : register(s1);
+SamplerComparisonState shadow_samp : register(s1);
 
 [shader("pixel")]
 float4 pixel_main(OutVertex input) : SV_TARGET
@@ -164,8 +164,12 @@ float4 pixel_main(OutVertex input) : SV_TARGET
         lo += ApplyLight(n, v, l, f0, albedo, radiance, roughness, metallic);
     };
 
-    float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, PushConstants.ibl_index, samp);
-    float3 color = ibl + lo + emissive;
+    var shadow_texture = DescriptorHandle<Texture2D<float>>(GlobalConstants.shadow_map_index);
+    float shadow = CalculateShadow(shadow_texture, shadow_samp, input.light_space_pos, n, dir_light_buffer[0].direction);
+
+    var specular_ibl_texture = DescriptorHandle<TextureCube>(PushConstants.ibl_index);
+    float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, specular_ibl_texture, samp);
+    float3 color = ibl + (1.0 - shadow) * lo + emissive;
     color = color / (color + float3(1.0, 1.0, 1.0));
     return float4(color, 1.0);
 }

@@ -3,6 +3,7 @@ cbuffer GlobalConstantBuffer : register(b1)
     float4x4 view_proj;
     float4x4 view;
     float4x4 proj;
+    float4x4 sun_view_proj;
 
     float3 cam_pos;
     uint cubemap_index;
@@ -17,7 +18,7 @@ cbuffer GlobalConstantBuffer : register(b1)
     uint point_light_count;
     uint dir_light_count;
 
-    uint cascade_buffer_index;
+    uint shadow_map_index;
 } GlobalConstants;
 
 struct Meshlet

@@ -18,7 +18,7 @@ struct MeshRenderer
     uint32_t m_transform_index;
     uint32_t m_bounding_offset;
 
-    void Draw(Swift::ICommand* command) const;
+    void Draw(Swift::ICommand* command, bool dispatch_amp) const;
 };
 
 struct DirectionalLight
@@ -88,10 +88,12 @@ public:
 private:
     void InitContext();
     void InitBuffers();
+    void InitShadowPass();
     void InitSkyboxShader();
     void InitPBRShader();
     void DrawGeometry(Swift::ICommand* command) const;
     void DrawSkybox(Swift::ICommand* command) const;
+    void DrawShadowPass(Swift::ICommand* command) const;
     void InitImgui();
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
@@ -101,6 +103,7 @@ private:
         glm::mat4 view_proj;
         glm::mat4 view;
         glm::mat4 proj;
+        glm::mat4 sun_view_proj;
 
         glm::vec3 cam_pos;
         uint32_t cubemap_index;
@@ -114,6 +117,8 @@ private:
         uint32_t dir_light_buffer_index;
         uint32_t point_light_count;
         uint32_t dir_light_count;
+
+        uint32_t shadow_texture_index;
     };
 
     struct TextureView
@@ -131,6 +136,11 @@ private:
     TextureView m_dummy_black_texture;
     TextureView m_dummy_normal_texture;
     TextureView m_specular_ibl_texture;
+
+    Swift::IShader* m_shadow_shader = nullptr;
+    Swift::ITexture* m_shadow_texture = nullptr;
+    Swift::ITextureSRV* m_shadow_texture_srv = nullptr;
+    Swift::IDepthStencil* m_shadow_depth_stencil = nullptr;
 
     Swift::ITexture* m_depth_texture = nullptr;
     Swift::IDepthStencil* m_depth_stencil = nullptr;

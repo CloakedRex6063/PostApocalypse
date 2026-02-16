@@ -115,7 +115,8 @@ float3 CalculateIrradiance(float3 n)
                float3(0.0));
 }
 
-float3 CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float roughness, uint ibl_index, SamplerState samp)
+float3
+CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float roughness, TextureCube ibl_texture, SamplerState samp)
 {
     float n_dot_v = max(dot(n, v), 0.0);
     float3 f0 = lerp(float3(0.04), albedo, metallic);
@@ -127,8 +128,7 @@ float3 CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float rou
     float3 r = reflect(-v, n);
     float lod = roughness * max_mip_level;
 
-    var specular_ibl_texture = DescriptorHandle<TextureCube>(ibl_index);
-    float3 indirect_specular = specular_ibl_texture.SampleLevel(samp, r, lod).rgb;
+    float3 indirect_specular = ibl_texture.SampleLevel(samp, r, lod).rgb;
     float horizon = min(1.0 + dot(r, n), 1.0);
     indirect_specular *= horizon * horizon;
     float2 brdf = EnvBRDFApprox(n_dot_v, roughness);
@@ -137,4 +137,35 @@ float3 CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float rou
     float3 indirect_diffuse = max(CalculateIrradiance(n), 0.0) * Fd_Lambert();
 
     return albedo * indirect_diffuse + indirect_specular * specular;
+}
+
+float CalculateShadow(Texture2D<float> shadow_texture,
+                      SamplerComparisonState samp,
+                      float4 light_space_pos,
+                      float3 normal,
+                      float3 light_dir)
+{
+    uint width;
+    uint height;
+    shadow_texture.GetDimensions(width, height);
+    float2 texel_size = float2(1.0 / width, 1.0 / height);
+    float3 proj_coords = light_space_pos.xyz / light_space_pos.w;
+    proj_coords.xy = proj_coords.xy * 0.5 + 0.5;
+    proj_coords.y = 1.0 - proj_coords.y;
+
+    if (proj_coords.z > 1.0)
+        return 0.0;
+
+    float depth = proj_coords.z;
+
+    float shadow = 0.0;
+    for (int x = -1; x <= 1; x++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            shadow += shadow_texture.SampleCmpLevelZero(samp, proj_coords.xy + float2(x, y) * texel_size, depth);
+        }
+    }
+
+    return 1.0 - (shadow / 9.0);
 }

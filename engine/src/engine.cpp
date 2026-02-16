@@ -18,7 +18,7 @@ Engine::Engine()
         .color = glm::vec3(1.0f, 0.95f, 0.8f),
         .cast_shadows = true,
     });
-    m_resources->LoadModel("assets/chess/chess.gltf", glm::vec3(10.f));
+    m_resources->LoadModel("assets/cathedral/cathedral.gltf", glm::vec3(1.f));
 }
 
 Engine::~Engine() {}

@@ -20,7 +20,7 @@ CPMAddPackage(
 CPMAddPackage(
         NAME SWIFT
         GITHUB_REPOSITORY CloakedRex6063/SwiftRender
-        GIT_TAG 9914d93
+        GIT_TAG 329ef43c
 )
 CPMAddPackage(
         NAME fastgltf

@@ -6,10 +6,17 @@
 #include "imgui_impl_glfw.h"
 #include "d3d12/d3d12_context.hpp"
 
-void MeshRenderer::Draw(Swift::ICommand* command) const
+void MeshRenderer::Draw(Swift::ICommand* command, const bool dispatch_amp) const
 {
-    const uint32_t num_amp_groups = (m_meshlet_count + 31) / 32;
-    command->DispatchMesh(num_amp_groups, 1, 1);
+    if (dispatch_amp)
+    {
+        const uint32_t num_amp_groups = (m_meshlet_count + 31) / 32;
+        command->DispatchMesh(num_amp_groups, 1, 1);
+    }
+    else
+    {
+        command->DispatchMesh(m_meshlet_count, 1, 1);
+    }
 }
 
 Renderer::Renderer(Engine* engine) : m_engine(engine)
@@ -19,6 +26,7 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
 
     InitBuffers();
     InitPBRShader();
+    InitShadowPass();
     InitSkyboxShader();
 
     m_engine->GetWindow().AddResizeCallback(
@@ -57,13 +65,21 @@ void Renderer::Update()
     auto* command = m_context->GetCurrentCommand();
 
     auto& camera = m_engine->GetCamera();
-    auto& window = m_engine->GetWindow();
+    const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+
+    constexpr float near_plane = 1.0f;
+    constexpr float far_plane = 100.f;
+    const glm::mat4 sun_proj = glm::orthoRH_ZO(-100.0f, 100.0f, -100.0f, 100.0f, near_plane, far_plane);
+    constexpr float sun_distance = 25.f;
+    const glm::vec3 sun_pos = glm::normalize(m_dir_lights[0].direction) * sun_distance;
+    const auto sun_view = glm::lookAtRH(sun_pos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     const GlobalConstantInfo info{
         .view_proj = camera.m_proj_matrix * camera.m_view_matrix,
         .view = camera.m_view_matrix,
         .proj = camera.m_proj_matrix,
+        .sun_view_proj = sun_proj * sun_view,
         .cam_pos = camera.m_position,
         .cubemap_index = m_skybox_texture.texture_srv->GetDescriptorIndex(),
         .transform_buffer_index = m_transform_buffer_srv->GetDescriptorIndex(),
@@ -74,6 +90,7 @@ void Renderer::Update()
         .dir_light_buffer_index = m_dir_light_buffer_srv->GetDescriptorIndex(),
         .point_light_count = static_cast<uint32_t>(m_point_lights.size()),
         .dir_light_count = static_cast<uint32_t>(m_dir_lights.size()),
+        .shadow_texture_index = m_shadow_texture_srv->GetDescriptorIndex(),
     };
     m_global_constant_buffer->Write(&info, 0, sizeof(GlobalConstantInfo));
 
@@ -99,6 +116,8 @@ void Renderer::Update()
 
     DrawSkybox(command);
 
+    DrawShadowPass(command);
+
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
 
@@ -114,11 +133,14 @@ void Renderer::Update()
     {
         auto& dir_light = m_dir_lights[i];
         ImGui::PushID(i);
-        ImGui::DragFloat3("Direction", glm::value_ptr(dir_light.direction));
+        ImGui::SliderFloat3("Direction", glm::value_ptr(dir_light.direction), -1.0f, 1.0f);
         ImGui::DragFloat("Intensity", &dir_light.intensity);
         ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color));
         ImGui::PopID();
     }
+
+    ImGui::DragFloat("Move Speed", &camera.m_move_speed);
+
     ImGui::End();
 
     ImGui::Render();
@@ -221,6 +243,41 @@ void Renderer::InitBuffers()
                                                            });
 }
 
+void Renderer::InitShadowPass()
+{
+    m_shadow_texture = Swift::TextureBuilder(m_context, 4096, 4096)
+                           .SetFormat(Swift::Format::eD32F)
+                           .SetFlags(Swift::TextureFlags::eDepthStencil)
+                           .SetName("Shadow Texture")
+                           .Build();
+    m_shadow_depth_stencil = m_context->CreateDepthStencil(m_shadow_texture);
+    m_shadow_texture_srv = m_context->CreateShaderResource(m_shadow_texture);
+    std::vector<Swift::Descriptor> descriptors{};
+    const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
+    descriptors.emplace_back(descriptor);
+    const std::vector<Swift::SamplerDescriptor> samplers{
+        {},
+    };
+
+    m_shadow_shader = Swift::GraphicsShaderBuilder(m_context)
+                          .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                          .SetDSVFormat(Swift::Format::eD32F)
+                          .SetMeshShader(shadow_mesh_main_code)
+                          .SetPixelShader(shadow_pixel_main_code)
+                          .SetDepthTestEnable(true)
+                          .SetDepthWriteEnable(true)
+                          .SetDepthBias(100)
+                          .SetDepthBiasClamp(0.0f)
+                          .SetSlopeScaledDepthBias(1.f)
+                          .SetCullMode(Swift::CullMode::eFront)
+                          .SetDepthTest(Swift::DepthTest::eLess)
+                          .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                          .SetDescriptors(descriptors)
+                          .SetStaticSamplers(samplers)
+                          .SetName("Shadow Shader")
+                          .Build();
+}
+
 void Renderer::InitSkyboxShader()
 {
     std::vector<Swift::Descriptor> descriptors{};
@@ -252,15 +309,16 @@ void Renderer::InitPBRShader()
     const std::vector<Swift::SamplerDescriptor> samplers{
         {},
         {
-            .min_filter = Swift::Filter::eLinearMipLinear,
-            .mag_filter = Swift::Filter::eLinearMipLinear,
-            .wrap_u = Swift::Wrap::eClampToEdge,
-            .wrap_y = Swift::Wrap::eClampToEdge,
-            .wrap_w = Swift::Wrap::eClampToEdge,
+            .min_filter = Swift::Filter::eNearest,
+            .mag_filter = Swift::Filter::eNearest,
+            .wrap_u = Swift::Wrap::eBorder,
+            .wrap_y = Swift::Wrap::eBorder,
+            .wrap_w = Swift::Wrap::eBorder,
             .min_lod = 0,
             .max_lod = 13,
             .border_color = Swift::BorderColor::eWhite,
-            .comparison_func = Swift::ComparisonFunc::eLessEqual,
+            .comparison_func = Swift::ComparisonFunc::eLess,
+            .filter_type = Swift::FilterType::eComparison,
         },
     };
 
@@ -461,7 +519,7 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
             .ibl_index = m_specular_ibl_texture.texture_srv->GetDescriptorIndex(),
         };
         command->PushConstants(&push_constants, sizeof(PushConstants));
-        renderable.Draw(command);
+        renderable.Draw(command, true);
     }
 }
 
@@ -470,6 +528,47 @@ void Renderer::DrawSkybox(Swift::ICommand* command) const
     command->BindShader(m_skybox_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
     command->DispatchMesh(1, 1, 1);
+}
+
+void Renderer::DrawShadowPass(Swift::ICommand* command) const
+{
+    command->SetViewport(Swift::Viewport{ .dimensions = { 4096, 4096 } });
+    command->SetScissor(Swift::Scissor{ .dimensions = { 4096, 4096 } });
+    command->TransitionResource(m_shadow_texture->GetResource(), Swift::ResourceState::eDepthWrite);
+    command->ClearDepthStencil(m_shadow_depth_stencil, 1.f, 0);
+    command->BindRenderTargets(nullptr, m_shadow_depth_stencil);
+    command->BindShader(m_shadow_shader);
+
+    for (const auto& renderable : m_renderables)
+    {
+        const struct PushConstants
+        {
+            uint32_t vertex_buffer;
+            uint32_t meshlet_buffer;
+            uint32_t mesh_vertex_buffer;
+            uint32_t mesh_triangle_buffer;
+
+            int material_index;
+            uint32_t transform_index;
+            uint32_t meshlet_count;
+            uint32_t bounding_offset;
+
+            uint32_t ibl_index;
+        } push_constants{
+            .vertex_buffer = renderable.m_vertex_buffer_srv->GetDescriptorIndex(),
+            .meshlet_buffer = renderable.m_mesh_buffer_srv->GetDescriptorIndex(),
+            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer_srv->GetDescriptorIndex(),
+            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer_srv->GetDescriptorIndex(),
+            .material_index = renderable.m_material_index,
+            .transform_index = renderable.m_transform_index,
+            .meshlet_count = renderable.m_meshlet_count,
+            .bounding_offset = renderable.m_bounding_offset,
+            .ibl_index = m_specular_ibl_texture.texture_srv->GetDescriptorIndex(),
+        };
+        command->PushConstants(&push_constants, sizeof(PushConstants));
+        renderable.Draw(command, false);
+    }
+    command->TransitionResource(m_shadow_texture->GetResource(), Swift::ResourceState::eShaderResource);
 }
 
 void Renderer::InitImgui()
