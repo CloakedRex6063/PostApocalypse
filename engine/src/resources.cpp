@@ -504,13 +504,28 @@ std::vector<Vertex> Resources::LoadVertices(const fastgltf::Asset& asset,
                                                   { vertices[index].normal = normal; });
 
     auto& uvAccessor = asset.accessors[uvIt->accessorIndex];
-    fastgltf::iterateAccessorWithIndex<glm::vec2>(asset,
-                                                  uvAccessor,
-                                                  [&](const glm::vec2& uv, const size_t index)
-                                                  {
-                                                      vertices[index].uv_x = uv.x;
-                                                      vertices[index].uv_y = uv.y;
-                                                  });
+    if (uvAccessor.type == fastgltf::AccessorType::Vec2)
+    {
+        fastgltf::iterateAccessorWithIndex<glm::vec2>(asset,
+                                                      uvAccessor,
+                                                      [&](const glm::vec2& uv, size_t index)
+                                                      {
+                                                          if (index >= vertices.size()) return;
+                                                          vertices[index].uv_x = uv.x;
+                                                          vertices[index].uv_y = uv.y;
+                                                      });
+    }
+    else if (uvAccessor.type == fastgltf::AccessorType::Vec3)
+    {
+        fastgltf::iterateAccessorWithIndex<glm::vec3>(asset,
+                                                      uvAccessor,
+                                                      [&](const glm::vec3& uv, size_t index)
+                                                      {
+                                                          if (index >= vertices.size()) return;
+                                                          vertices[index].uv_x = uv.x;
+                                                          vertices[index].uv_y = uv.y;
+                                                      });
+    }
 
     LoadTangents(vertices, indices);
     return vertices;

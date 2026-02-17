@@ -112,9 +112,8 @@ void Renderer::Update()
     command->ClearDepthStencil(m_depth_stencil, 1.f, 0);
     command->BindRenderTargets(render_target, m_depth_stencil);
 
-    DrawSkybox(command);
-
     DrawGeometry(command);
+    DrawSkybox(command);
 
     ImGui::Begin("Lights");
     if (ImGui::Button("Add Directional Light"))
@@ -144,9 +143,9 @@ void Renderer::Update()
 
     ImGui::End();
 
-    if (m_rebuild_lights) {
-        ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
-                                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
+    if (m_rebuild_lights)
+    {
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
                                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
                                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar;
 
@@ -155,15 +154,16 @@ void Renderer::Update()
 
         ImGui::Begin("##rebuild_alert", nullptr, flags);
 
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.65f, 0.35f, 0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.35f, 0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.45f, 0.0f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.50f, 0.25f, 0.0f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.0f,  0.85f, 0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.50f, 0.25f, 0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.0f, 1.0f));
 
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().FramePadding.y);
         ImGui::Text("Lighting needs to be rebuilt [!]");
         ImGui::SameLine();
-        if (ImGui::Button("Rebuild Lights")) {
+        if (ImGui::Button("Rebuild Lights"))
+        {
             GenerateStaticShadowMap();
             m_rebuild_lights = false;
         }
@@ -196,11 +196,14 @@ void Renderer::GenerateStaticShadowMap() const
 void Renderer::InitContext()
 {
     const auto size = m_engine->GetWindow().GetSize();
-    m_context = Swift::CreateContext({ .backend_type = Swift::BackendType::eD3D12,
-                                       .width = size.x,
-                                       .height = size.y,
-                                       .native_window_handle = m_engine->GetWindow().GetNativeWindow(),
-                                       .native_display_handle = nullptr });
+    m_context = Swift::CreateContext({
+        .backend_type = Swift::BackendType::eD3D12,
+        .width = size.x,
+        .height = size.y,
+        .native_window_handle = m_engine->GetWindow().GetNativeWindow(),
+        .native_display_handle = nullptr,
+        .cbv_srv_uav_handle_count = 16384,
+    });
 
     constexpr auto white = 0xFFFFFFFF;
     m_dummy_white_texture.texture = Swift::TextureBuilder(m_context, 1, 1)
@@ -332,6 +335,7 @@ void Renderer::InitSkyboxShader()
                           .SetDSVFormat(Swift::Format::eD32F)
                           .SetMeshShader(skybox_mesh_main_code)
                           .SetPixelShader(skybox_pixel_main_code)
+                          .SetDepthTest(Swift::DepthTest::eGreaterEqual)
                           .SetDepthTestEnable(true)
                           .SetDepthWriteEnable(false)
                           .SetCullMode(Swift::CullMode::eNone)
