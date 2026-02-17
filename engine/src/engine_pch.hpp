@@ -22,6 +22,7 @@
 #include "glm/gtc/matrix_transform.hpp"
 #include "glm/detail/type_quat.hpp"
 #include "glm/ext/matrix_clip_space.hpp"
+#include "glm/gtx/euler_angles.hpp"
 #include "glm/gtx/quaternion.hpp"
 #include "glm/gtc/type_ptr.hpp"
 #include "swift.hpp"

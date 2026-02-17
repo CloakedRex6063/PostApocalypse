@@ -12,13 +12,15 @@ Engine::Engine()
     auto* skybox_texture = m_resources->LoadTexture("assets/skybox/sky.dds");
     auto* ibl_texture = m_resources->LoadTexture("assets/skybox/sky_specular.dds");
     m_renderer->SetSkybox(skybox_texture, ibl_texture);
-    m_renderer->AddDirectionalLight(DirectionalLight{
-        .direction = glm::normalize(glm::vec3(-0.5f, -0.3f, -0.8f)),
+    DirectionalLight dir_light{
         .intensity = 1.f,
         .color = glm::vec3(1.0f, 0.95f, 0.8f),
         .cast_shadows = true,
-    });
+    };
+    dir_light.SetDirectionEuler(glm::vec3(-45.0f, 135.0f, 0.0f));
+    m_renderer->AddDirectionalLight(dir_light);
     m_resources->LoadModel("assets/cathedral/cathedral.gltf", glm::vec3(1.f));
+    m_renderer->GenerateStaticShadowMap();
 }
 
 Engine::~Engine() {}

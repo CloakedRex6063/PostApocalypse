@@ -1,4 +1,5 @@
 #pragma once
+#include "camera.hpp"
 #include "resources.hpp"
 
 class Engine;
@@ -27,6 +28,12 @@ struct DirectionalLight
     float intensity = 1.0f;
     glm::vec3 color = glm::vec3(1.0f);
     int cast_shadows = false;
+    void SetDirectionEuler(const glm::vec3& euler)
+    {
+        const glm::mat4 rot = glm::yawPitchRoll(glm::radians(euler.y), glm::radians(euler.x), glm::radians(euler.z));
+        constexpr auto forward = glm::vec3(0.0f, 0.0f, -1.0f);
+        direction = glm::normalize(glm::vec3(rot * glm::vec4(forward, 0.0f)));
+    }
 };
 
 struct PointLight
@@ -42,6 +49,7 @@ class Renderer
 public:
     explicit Renderer(Engine* engine);
     ~Renderer();
+    void UpdateGlobalConstantBuffer(const Camera& camera) const;
 
     void Update();
     auto* GetContext() const { return m_context; }
@@ -82,8 +90,17 @@ public:
     void AddDirectionalLight(const DirectionalLight& directional_light)
     {
         m_dir_lights.push_back(directional_light);
+
+        glm::vec3 d = glm::normalize(directional_light.direction);
+        glm::vec3 euler;
+        euler.x = glm::degrees(asin(d.y));
+        euler.y = glm::degrees(atan2(d.z, d.x));
+        m_dir_light_eulers.push_back(euler);
+
         m_dir_light_buffer->Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
     }
+
+    void GenerateStaticShadowMap() const;
 
 private:
     void InitContext();
@@ -131,6 +148,8 @@ private:
     Swift::IContext* m_context = nullptr;
     Swift::IHeap* m_texture_heap = nullptr;
 
+    bool m_rebuild_lights = false;
+
     TextureView m_skybox_texture;
     TextureView m_dummy_white_texture;
     TextureView m_dummy_black_texture;
@@ -164,6 +183,7 @@ private:
     std::vector<Swift::SamplerDescriptor> m_sampler_descriptors;
     std::vector<PointLight> m_point_lights;
     std::vector<DirectionalLight> m_dir_lights;
+    std::vector<glm::vec3> m_dir_light_eulers;
     std::vector<MeshRenderer> m_renderables;
     std::vector<glm::mat4> m_transforms;
     std::vector<Material> m_materials;

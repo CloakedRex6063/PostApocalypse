@@ -59,21 +59,13 @@ Renderer::~Renderer()
     Swift::DestroyContext(m_context);
 }
 
-void Renderer::Update()
+void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
 {
-    auto* render_target = m_context->GetCurrentRenderTarget();
-    auto* command = m_context->GetCurrentCommand();
-
-    auto& camera = m_engine->GetCamera();
-    const auto& window = m_engine->GetWindow();
-    auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-
     constexpr float near_plane = 1.0f;
-    constexpr float far_plane = 100.f;
-    const glm::mat4 sun_proj = glm::orthoRH_ZO(-100.0f, 100.0f, -100.0f, 100.0f, near_plane, far_plane);
-    constexpr float sun_distance = 25.f;
-    const glm::vec3 sun_pos = glm::normalize(m_dir_lights[0].direction) * sun_distance;
+    constexpr float far_plane = 150.f;
+    const glm::mat4 sun_proj = glm::orthoRH_ZO(-150.0f, 150.0f, -150.f, 150.0f, near_plane, far_plane);
+    constexpr float sun_distance = 75.f;
+    const glm::vec3 sun_pos = -glm::normalize(m_dir_lights[0].direction) * sun_distance;
     const auto sun_view = glm::lookAtRH(sun_pos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     const GlobalConstantInfo info{
         .view_proj = camera.m_proj_matrix * camera.m_view_matrix,
@@ -93,6 +85,15 @@ void Renderer::Update()
         .shadow_texture_index = m_shadow_texture_srv->GetDescriptorIndex(),
     };
     m_global_constant_buffer->Write(&info, 0, sizeof(GlobalConstantInfo));
+}
+void Renderer::Update()
+{
+    auto* render_target = m_context->GetCurrentRenderTarget();
+    auto* command = m_context->GetCurrentCommand();
+
+    auto& camera = m_engine->GetCamera();
+
+    UpdateGlobalConstantBuffer(camera);
 
     const auto frustum = camera.CreateFrustum();
     m_frustum_buffer->Write(&frustum, 0, sizeof(Frustum));
@@ -105,9 +106,6 @@ void Renderer::Update()
 
     command->Begin();
 
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-
     command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::eRenderTarget);
     command->ClearRenderTarget(render_target, { 0.392f, 0.584f, 0.929f, 1.0 });
     command->TransitionResource(m_depth_stencil->GetTexture()->GetResource(), Swift::ResourceState::eDepthWrite);
@@ -116,24 +114,27 @@ void Renderer::Update()
 
     DrawSkybox(command);
 
-    DrawShadowPass(command);
-
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-
     DrawGeometry(command);
 
     ImGui::Begin("Lights");
     if (ImGui::Button("Add Directional Light"))
     {
-        m_dir_lights.emplace_back();
+        AddDirectionalLight({});
     }
 
     for (int i = 0; i < m_dir_lights.size(); ++i)
     {
         auto& dir_light = m_dir_lights[i];
+        auto& euler = m_dir_light_eulers[i];
         ImGui::PushID(i);
-        ImGui::SliderFloat3("Direction", glm::value_ptr(dir_light.direction), -1.0f, 1.0f);
+        if (ImGui::SliderFloat3("Light Rotation (Euler)", glm::value_ptr(euler), -180.0f, 180.0f))
+        {
+            glm::mat4 rot = glm::yawPitchRoll(glm::radians(euler.y), glm::radians(euler.x), glm::radians(euler.z));
+            glm::vec3 forward = glm::vec3(0.0f, 0.0f, -1.0f);
+            dir_light.direction = glm::normalize(glm::vec3(rot * glm::vec4(forward, 0.0f)));
+            m_rebuild_lights = true;
+        }
+
         ImGui::DragFloat("Intensity", &dir_light.intensity);
         ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color));
         ImGui::PopID();
@@ -143,12 +144,53 @@ void Renderer::Update()
 
     ImGui::End();
 
+    if (m_rebuild_lights) {
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
+                                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar;
+
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, 10), ImGuiCond_Always, ImVec2(1, 0));
+
+        ImGui::Begin("##rebuild_alert", nullptr, flags);
+
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.65f, 0.35f, 0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.45f, 0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.50f, 0.25f, 0.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(1.0f,  0.85f, 0.0f, 1.0f));
+
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().FramePadding.y);
+        ImGui::Text("Lighting needs to be rebuilt [!]");
+        ImGui::SameLine();
+        if (ImGui::Button("Rebuild Lights")) {
+            GenerateStaticShadowMap();
+            m_rebuild_lights = false;
+        }
+
+        ImGui::PopStyleColor(4);
+        ImGui::End();
+    }
+
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
 
     command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::ePresent);
     command->End();
     m_context->Present(false);
+}
+
+void Renderer::GenerateStaticShadowMap() const
+{
+    auto& camera = m_engine->GetCamera();
+    UpdateGlobalConstantBuffer(camera);
+    m_context->GetGraphicsQueue()->WaitIdle();
+    const auto command = m_context->CreateCommand(Swift::QueueType::eGraphics);
+    command->Begin();
+    DrawShadowPass(command);
+    command->End();
+    const auto fence_value = m_context->GetGraphicsQueue()->Execute(command);
+    m_context->GetGraphicsQueue()->Wait(fence_value);
 }
 
 void Renderer::InitContext()
@@ -266,9 +308,9 @@ void Renderer::InitShadowPass()
                           .SetPixelShader(shadow_pixel_main_code)
                           .SetDepthTestEnable(true)
                           .SetDepthWriteEnable(true)
-                          .SetDepthBias(100)
-                          .SetDepthBiasClamp(0.0f)
-                          .SetSlopeScaledDepthBias(1.f)
+                          .SetDepthBias(10)
+                          .SetDepthBiasClamp(0.005f)
+                          .SetSlopeScaledDepthBias(1.5f)
                           .SetCullMode(Swift::CullMode::eFront)
                           .SetDepthTest(Swift::DepthTest::eLess)
                           .SetPolygonMode(Swift::PolygonMode::eTriangle)
@@ -488,9 +530,15 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
 
 void Renderer::DrawGeometry(Swift::ICommand* command) const
 {
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
     auto* render_target = m_context->GetCurrentRenderTarget();
     command->BindRenderTargets(render_target, m_depth_stencil);
     command->BindShader(m_pbr_shader);
+    command->BindConstantBuffer(m_global_constant_buffer, 1);
 
     for (const auto& renderable : m_renderables)
     {
@@ -525,6 +573,11 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
 
 void Renderer::DrawSkybox(Swift::ICommand* command) const
 {
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
     command->BindShader(m_skybox_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
     command->DispatchMesh(1, 1, 1);
@@ -538,6 +591,7 @@ void Renderer::DrawShadowPass(Swift::ICommand* command) const
     command->ClearDepthStencil(m_shadow_depth_stencil, 1.f, 0);
     command->BindRenderTargets(nullptr, m_shadow_depth_stencil);
     command->BindShader(m_shadow_shader);
+    command->BindConstantBuffer(m_global_constant_buffer, 1);
 
     for (const auto& renderable : m_renderables)
     {

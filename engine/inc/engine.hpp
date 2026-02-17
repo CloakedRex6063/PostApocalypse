@@ -57,5 +57,10 @@ void Engine::Run()
         m_renderer->Update();
         m_scene->Update(delta_time);
         game->Update(delta_time);
+
+        if (m_input->IsKeyPressed(KeyboardKey::eF1))
+        {
+            m_renderer->GenerateStaticShadowMap();
+        }
     }
 }

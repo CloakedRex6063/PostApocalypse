@@ -159,7 +159,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     for (int i = 0; i < GlobalConstants.dir_light_count; i++)
     {
         DirectionalLight dir_light = dir_light_buffer[i];
-        float3 l = normalize(dir_light.direction);
+        float3 l = normalize(-dir_light.direction);
         float3 radiance = dir_light.color * dir_light.intensity;
         lo += ApplyLight(n, v, l, f0, albedo, radiance, roughness, metallic);
     };
@@ -169,7 +169,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
 
     var specular_ibl_texture = DescriptorHandle<TextureCube>(PushConstants.ibl_index);
     float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, specular_ibl_texture, samp);
-    float3 color = ibl + (1.0 - shadow) * lo + emissive;
+    float3 color = ibl + shadow * lo + emissive;
     color = color / (color + float3(1.0, 1.0, 1.0));
     return float4(color, 1.0);
 }

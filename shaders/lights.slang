@@ -154,18 +154,19 @@ float CalculateShadow(Texture2D<float> shadow_texture,
     proj_coords.y = 1.0 - proj_coords.y;
 
     if (proj_coords.z > 1.0)
-        return 0.0;
+        return 1.0;
 
     float depth = proj_coords.z;
 
     float shadow = 0.0;
-    for (int x = -1; x <= 1; x++)
+    for (int x = -4; x <= 4; x++)
     {
-        for (int y = -1; y <= 1; y++)
+        for (int y = -4; y <= 4; y++)
         {
             shadow += shadow_texture.SampleCmpLevelZero(samp, proj_coords.xy + float2(x, y) * texel_size, depth);
         }
     }
 
-    return 1.0 - (shadow / 9.0);
+    float min_shadow = 0.2;
+    return lerp(min_shadow, 1.0, shadow / 81.0);
 }
