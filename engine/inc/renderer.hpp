@@ -275,14 +275,14 @@ public:
     auto* GetContext() const { return m_context; }
     void SetSkybox(Swift::ITexture* texture, Swift::ITexture* ibl_texture)
     {
-        if (m_skybox_pass.m_skybox_texture.texture)
+        if (m_skybox_pass.texture.texture)
         {
             m_context->GetGraphicsQueue()->WaitIdle();
-            m_context->DestroyTexture(m_skybox_pass.m_skybox_texture.texture);
-            m_context->DestroyShaderResource(m_skybox_pass.m_skybox_texture.srv);
+            m_context->DestroyTexture(m_skybox_pass.texture.texture);
+            m_context->DestroyShaderResource(m_skybox_pass.texture.srv);
         }
-        m_skybox_pass.m_skybox_texture.texture = texture;
-        m_skybox_pass.m_skybox_texture.srv = m_context->CreateShaderResource(m_skybox_pass.m_skybox_texture.texture);
+        m_skybox_pass.texture.texture = texture;
+        m_skybox_pass.texture.srv = m_context->CreateShaderResource(m_skybox_pass.texture.texture);
 
         if (m_specular_ibl_texture.texture)
         {
@@ -390,17 +390,18 @@ private:
 
     struct SkyboxPass
     {
-        Swift::IShader* m_skybox_shader = nullptr;
-        TextureView m_skybox_texture;
+        Swift::IShader* shader = nullptr;
+        TextureView texture;
     } m_skybox_pass;
 
     struct FogPass
     {
-        float m_fog_density = 0.15f;
-        float m_fog_max_distance = 200.f;
-        glm::vec3 m_fog_color = glm::vec3(0.6, 0.65, 0.7);
-        uint32_t m_raymarch_steps = 64;
-        Swift::IShader* m_fog_shader = nullptr;
+        float density = 0.15f;
+        float max_distance = 200.f;
+        float scattering_factor = 0.8f;
+        glm::vec3 color = glm::vec3(0.6, 0.65, 0.7);
+        uint32_t raymarch_steps = 64;
+        Swift::IShader* shader = nullptr;
     } m_fog_pass;
 
     struct PostProcess
@@ -416,19 +417,19 @@ private:
 
     struct GrassPass
     {
-        float m_wind_speed = 1.f;
-        float m_wind_strength = 0.4f;
-        float m_grass_lod_distance = 50.f;
-        bool m_apply_view_space_thicken = false;
-        Swift::IShader* m_grass_shader = nullptr;
-        BufferView m_grass_buffer;
-        std::vector<GrassPatch> m_grass_patches;
+        float wind_speed = 1.f;
+        float wind_strength = 0.4f;
+        float lod_distance = 50.f;
+        bool apply_view_space_thicken = false;
+        Swift::IShader* shader = nullptr;
+        BufferView buffer;
+        std::vector<GrassPatch> patches;
     } m_grass_pass;
 
     struct ShadowPass
     {
-        Swift::IShader* m_shadow_shader = nullptr;
-        TextureView m_shadow_texture;
+        Swift::IShader* shader = nullptr;
+        TextureView texture;
     } m_shadow_pass;
 
     Swift::IShader* m_pbr_shader = nullptr;

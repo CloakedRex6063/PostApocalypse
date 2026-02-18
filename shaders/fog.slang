@@ -1,4 +1,5 @@
 #include "common.slang"
+#include "lights.slang"
 
 struct OutVertex
 {
@@ -34,6 +35,9 @@ struct PushConstant
 
     float3 fog_color;
     uint ray_march_steps;
+
+    uint shadow_map_index;
+    float scattering_factor;
 }
 ConstantBuffer<PushConstant> PushConstants : register(b0);
 
@@ -51,8 +55,43 @@ float GetFogDensity(float3 world_pos)
     return height_density * PushConstants.fog_density;
 }
 
+float PhaseHG(float cosTheta, float g)
+{
+    float g2 = g * g;
+    return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5) * (1.0 / (4.0 * 3.14159265));
+}
+
+float GetLightVisibility(float3 world_pos, Texture2D<float> shadow_texture, SamplerComparisonState shadow_samp)
+{
+    uint width;
+    uint height;
+    shadow_texture.GetDimensions(width, height);
+    float2 texel_size = float2(1.0 / width, 1.0 / height);
+    float4 light_space_pos = mul(GlobalConstants.sun_view_proj, float4(world_pos, 1.0));
+    float3 proj_coords = light_space_pos.xyz / light_space_pos.w;
+    proj_coords.xy = proj_coords.xy * 0.5 + 0.5;
+    proj_coords.y = 1.0 - proj_coords.y;
+
+    if (proj_coords.z > 1.0)
+        return 1.0;
+
+    float depth = proj_coords.z;
+
+    float shadow = 0.0;
+    for (int x = -1; x <= 1; x++)
+    {
+        for (int y = -1; y <= 1; y++)
+        {
+            shadow += shadow_texture.SampleCmpLevelZero(shadow_samp, proj_coords.xy + float2(x, y) * texel_size, depth);
+        }
+    }
+
+    return shadow / 9.0;
+}
+
 SamplerState point_samp : register(s0);
 SamplerState samp : register(s1);
+SamplerComparisonState shadow_samp : register(s2);
 
 [shader("pixel")]
 float4 pixel_main(OutVertex input) : SV_TARGET
@@ -72,21 +111,37 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     float3 ray_step = ray_dir * step_size;
     float3 current_pos = GlobalConstants.cam_pos;
 
-    float fog_accumulation = 0.0;
+    float transmittance = 1.0;
+    float3 scattering = float3(0, 0, 0);
+    var shadow_texture = DescriptorHandle<Texture2D<float>>(PushConstants.shadow_map_index);
+    var sun = DescriptorHandle<StructuredBuffer<DirectionalLight>>(GlobalConstants.dir_light_buffer_index)[0];
+    float3 sun_color = sun.color;
+    float3 sun_dir = -normalize(sun.direction);
+
+    float g = PushConstants.scattering_factor;
+    float cosTheta = dot(ray_dir, sun_dir);
+    float phase = PhaseHG(cosTheta, g);
+
     for (uint i = 0; i < PushConstants.ray_march_steps; i++)
     {
         current_pos += ray_step;
         float density = GetFogDensity(current_pos);
-        fog_accumulation += density * step_size;
+        float sigma_s = density;
+        float sigma_t = density;
+        float light_vis = GetLightVisibility(current_pos, shadow_texture, shadow_samp);
 
-        if (fog_accumulation >= 1.0)
-        {
-            fog_accumulation = 1.0;
+        float3 sun_scatter = sigma_s * light_vis * sun_color * phase;
+        float3 ambient_scatter = sigma_s * PushConstants.fog_color;
+        float3 total_light = sun_scatter + ambient_scatter;
+        scattering += transmittance * total_light * step_size;
+
+        transmittance *= exp(-sigma_t * step_size);
+
+        if (transmittance < 0.01)
             break;
-        }
     }
 
-    float3 final_color = lerp(scene_color, PushConstants.fog_color, fog_accumulation);
+    float3 final_color = scene_color * transmittance + scattering;
 
     return float4(final_color, 1.0);
 }
