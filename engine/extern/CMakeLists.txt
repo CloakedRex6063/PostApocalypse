@@ -23,6 +23,11 @@ CPMAddPackage(
         GIT_TAG 8211b4cf
 )
 CPMAddPackage(
+        NAME Tracy
+        GITHUB_REPOSITORY wolfpld/tracy
+        GIT_TAG v0.13.1
+)
+CPMAddPackage(
         NAME fastgltf
         GITHUB_REPOSITORY spnda/fastgltf
         GIT_TAG v0.9.0
@@ -85,4 +90,4 @@ if (stb_ADDED)
     target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
 endif ()
 
-target_link_libraries(Engine PUBLIC glfw meshoptimizer glm imgui imgui-dx12 imgui-glfw Swift dds fastgltf::fastgltf mikktspace stb)
+target_link_libraries(Engine PUBLIC glfw meshoptimizer glm imgui imgui-dx12 imgui-glfw Swift dds fastgltf::fastgltf mikktspace stb Tracy::TracyClient)

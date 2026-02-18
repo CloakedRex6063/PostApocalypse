@@ -4,6 +4,7 @@
 #include "imgui_impl_dx12.h"
 #include "shader_data.hpp"
 #include "imgui_impl_glfw.h"
+#include "profiler.hpp"
 #include "d3d12/d3d12_context.hpp"
 
 void MeshRenderer::Draw(Swift::ICommand* command, const bool dispatch_amp) const
@@ -29,6 +30,8 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
     InitShadowPass();
     InitGrassPass();
     InitSkyboxShader();
+
+    m_profiler = std::make_unique<GPUProfiler>(m_context);
 
     m_engine->GetWindow().AddResizeCallback(
         [&](const glm::uvec2 size)
@@ -62,6 +65,7 @@ Renderer::~Renderer()
 
 void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
 {
+    CPU_ZONE("Update Constant Buffer")
     constexpr float near_plane = 1.0f;
     constexpr float far_plane = 150.f;
     const glm::mat4 sun_proj = glm::orthoRH_ZO(-150.0f, 150.0f, -150.f, 150.0f, near_plane, far_plane);
@@ -90,6 +94,7 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
 }
 void Renderer::Update()
 {
+    CPU_ZONE("Rendering Loop");
     auto* render_target = m_context->GetCurrentRenderTarget();
     auto* command = m_context->GetCurrentCommand();
 
@@ -97,10 +102,16 @@ void Renderer::Update()
 
     UpdateGlobalConstantBuffer(camera);
 
-    const auto frustum = camera.CreateFrustum();
-    m_frustum_buffer->Write(&frustum, 0, sizeof(Frustum));
+    {
+        CPU_ZONE("Update Buffers")
+        const auto frustum = camera.CreateFrustum();
+        m_frustum_buffer->Write(&frustum, 0, sizeof(Frustum));
 
-    m_dir_light_buffer->Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
+        m_dir_light_buffer->Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
+    }
+
+    m_profiler->Collect();
+    m_profiler->NewFrame();
 
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -108,11 +119,14 @@ void Renderer::Update()
 
     command->Begin();
 
-    command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::eRenderTarget);
-    command->ClearRenderTarget(render_target, { 0.392f, 0.584f, 0.929f, 1.0 });
-    command->TransitionResource(m_depth_stencil->GetTexture()->GetResource(), Swift::ResourceState::eDepthWrite);
-    command->ClearDepthStencil(m_depth_stencil, 1.f, 0);
-    command->BindRenderTargets(render_target, m_depth_stencil);
+    {
+        GPU_ZONE(m_profiler, command, "Clear Textures")
+        command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::eRenderTarget);
+        command->ClearRenderTarget(render_target, { 0.392f, 0.584f, 0.929f, 1.0 });
+        command->TransitionResource(m_depth_stencil->GetTexture()->GetResource(), Swift::ResourceState::eDepthWrite);
+        command->ClearDepthStencil(m_depth_stencil, 1.f, 0);
+        command->BindRenderTargets(render_target, m_depth_stencil);
+    }
 
     DrawGeometry(command);
     DrawGrassPass(command);
@@ -210,12 +224,19 @@ void Renderer::Update()
         ImGui::End();
     }
 
-    ImGui::Render();
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
+    {
+        GPU_ZONE(m_profiler, command, "Imgui Pass");
+        ImGui::Render();
+        ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
+    }
 
     command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::ePresent);
     command->End();
-    m_context->Present(false);
+
+    {
+        CPU_ZONE("Present Time")
+        m_context->Present(false);
+    }
 }
 
 void Renderer::GenerateStaticShadowMap() const
@@ -600,6 +621,8 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
 
 void Renderer::DrawGeometry(Swift::ICommand* command) const
 {
+    CPU_ZONE("Geometry Pass");
+    GPU_ZONE(m_profiler, command, "Geometry Pass");
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
@@ -643,6 +666,8 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
 
 void Renderer::DrawSkybox(Swift::ICommand* command) const
 {
+    CPU_ZONE("Skybox Pass");
+    GPU_ZONE(m_profiler, command, "Skybox Pass");
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
@@ -655,6 +680,8 @@ void Renderer::DrawSkybox(Swift::ICommand* command) const
 
 void Renderer::DrawShadowPass(Swift::ICommand* command) const
 {
+    CPU_ZONE("Shadow Pass");
+    GPU_ZONE(m_profiler, command, "Shadow Pass");
     command->SetViewport(Swift::Viewport{ .dimensions = { 4096, 4096 } });
     command->SetScissor(Swift::Scissor{ .dimensions = { 4096, 4096 } });
     command->TransitionResource(m_shadow_texture->GetResource(), Swift::ResourceState::eDepthWrite);
@@ -698,6 +725,8 @@ void Renderer::DrawShadowPass(Swift::ICommand* command) const
 void Renderer::DrawGrassPass(Swift::ICommand* command) const
 {
     if (m_grass_patches.empty()) return;
+    CPU_ZONE("Grass Pass");
+    GPU_ZONE(m_profiler, command, "Grass Pass");
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };

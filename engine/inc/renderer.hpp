@@ -2,6 +2,7 @@
 #include "camera.hpp"
 #include "resources.hpp"
 
+class GPUProfiler;
 class Engine;
 
 struct MeshRenderer
@@ -125,6 +126,8 @@ private:
     void InitImgui();
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
+
+    std::unique_ptr<GPUProfiler> m_profiler;
 
     struct GlobalConstantInfo
     {
