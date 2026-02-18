@@ -118,11 +118,13 @@ private:
     void InitShadowPass();
     void InitSkyboxShader();
     void InitGrassPass();
+    void InitVolumetricFog();
     void InitPBRShader();
     void DrawGeometry(Swift::ICommand* command) const;
     void DrawSkybox(Swift::ICommand* command) const;
     void DrawShadowPass(Swift::ICommand* command) const;
     void DrawGrassPass(Swift::ICommand* command) const;
+    void DrawVolumetricFog(Swift::ICommand* command) const;
     void InitImgui();
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
@@ -170,8 +172,13 @@ private:
     TextureView m_dummy_normal_texture;
     TextureView m_specular_ibl_texture;
 
+    Swift::ITexture* m_render_target_texture = nullptr;
+    Swift::IRenderTarget* m_render_target = nullptr;
+    Swift::ITextureSRV* m_render_target_srv = nullptr;
     Swift::ITexture* m_depth_texture = nullptr;
     Swift::IDepthStencil* m_depth_stencil = nullptr;
+    Swift::ITextureSRV* m_depth_stencil_srv = nullptr;
+
     Swift::IBuffer* m_global_constant_buffer = nullptr;
     Swift::IBuffer* m_transform_buffer = nullptr;
     Swift::IBufferSRV* m_transform_buffer_srv = nullptr;
@@ -188,6 +195,16 @@ private:
 
     Swift::IShader* m_skybox_shader = nullptr;
     TextureView m_skybox_texture;
+
+    float m_fog_density = 0.15f;
+    float m_fog_max_distance = 200.f;
+    glm::vec3 m_fog_color = glm::vec3(0.6, 0.65, 0.7);
+    uint32_t m_raymarch_steps = 64;
+
+    Swift::IShader* m_fog_shader = nullptr;
+    Swift::ITexture* m_fog_texture = nullptr;
+    Swift::IRenderTarget* m_fog_rtv = nullptr;
+    Swift::ITextureSRV* m_fog_srv = nullptr;
 
     float m_wind_speed = 1.f;
     float m_wind_strength = 0.4f;

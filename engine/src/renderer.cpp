@@ -30,6 +30,7 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
     InitShadowPass();
     InitGrassPass();
     InitSkyboxShader();
+    InitVolumetricFog();
 
     m_profiler = std::make_unique<GPUProfiler>(m_context);
 
@@ -38,8 +39,29 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
         {
             m_context->GetGraphicsQueue()->WaitIdle();
             m_context->ResizeBuffers(size.x, size.y);
+            m_context->DestroyRenderTarget(m_render_target);
+            m_context->DestroyShaderResource(m_render_target_srv);
+            m_context->DestroyTexture(m_render_target_texture);
             m_context->DestroyDepthStencil(m_depth_stencil);
+            m_context->DestroyShaderResource(m_depth_stencil_srv);
             m_context->DestroyTexture(m_depth_texture);
+            m_context->DestroyRenderTarget(m_fog_rtv);
+            m_context->DestroyShaderResource(m_fog_srv);
+            m_context->DestroyTexture(m_fog_texture);
+
+            m_render_target_texture = Swift::TextureBuilder(m_context, size.x, size.y)
+                                          .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
+                                          .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                          .Build();
+            m_render_target = m_context->CreateRenderTarget(m_render_target_texture);
+            m_render_target_srv = m_context->CreateShaderResource(m_render_target_texture);
+
+            m_fog_texture = Swift::TextureBuilder(m_context, size.x, size.y)
+                                .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
+                                .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                .Build();
+            m_fog_rtv = m_context->CreateRenderTarget(m_fog_texture);
+            m_fog_srv = m_context->CreateShaderResource(m_fog_texture);
 
             m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
                                   .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
@@ -47,6 +69,7 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
                                   .SetMipmapLevels(0)
                                   .Build();
             m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
+            m_depth_stencil_srv = m_context->CreateShaderResource(m_depth_texture);
         });
 }
 
@@ -95,7 +118,6 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
 void Renderer::Update()
 {
     CPU_ZONE("Rendering Loop");
-    auto* render_target = m_context->GetCurrentRenderTarget();
     auto* command = m_context->GetCurrentCommand();
 
     auto& camera = m_engine->GetCamera();
@@ -121,76 +143,91 @@ void Renderer::Update()
 
     {
         GPU_ZONE(m_profiler, command, "Clear Textures")
-        command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::eRenderTarget);
-        command->ClearRenderTarget(render_target, { 0.392f, 0.584f, 0.929f, 1.0 });
-        command->TransitionResource(m_depth_stencil->GetTexture()->GetResource(), Swift::ResourceState::eDepthWrite);
+        command->TransitionResource(m_render_target_texture->GetResource(), Swift::ResourceState::eRenderTarget);
+        command->ClearRenderTarget(m_render_target, {});
+        command->ClearRenderTarget(m_render_target, {});
+        command->TransitionResource(m_depth_texture->GetResource(), Swift::ResourceState::eDepthWrite);
         command->ClearDepthStencil(m_depth_stencil, 1.f, 0);
-        command->BindRenderTargets(render_target, m_depth_stencil);
     }
 
     DrawGeometry(command);
     DrawGrassPass(command);
     DrawSkybox(command);
+    DrawVolumetricFog(command);
 
-    ImGui::Begin("Lights");
-    if (ImGui::Button("Add Directional Light"))
-    {
-        AddDirectionalLight({});
-    }
-
-    for (int i = 0; i < m_dir_lights.size(); ++i)
-    {
-        auto& dir_light = m_dir_lights[i];
-        auto& euler = m_dir_light_eulers[i];
-        ImGui::PushID(i);
-        if (ImGui::SliderFloat3("Light Rotation (Euler)", glm::value_ptr(euler), -180.0f, 180.0f))
-        {
-            glm::mat4 rot = glm::yawPitchRoll(glm::radians(euler.y), glm::radians(euler.x), glm::radians(euler.z));
-            glm::vec3 forward = glm::vec3(0.0f, 0.0f, -1.0f);
-            dir_light.direction = glm::normalize(glm::vec3(rot * glm::vec4(forward, 0.0f)));
-            m_rebuild_lights = true;
-        }
-
-        ImGui::DragFloat("Intensity", &dir_light.intensity);
-        ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color));
-        ImGui::PopID();
-    }
+    ImGui::Begin("Debugging");
 
     ImGui::DragFloat("Move Speed", &camera.m_move_speed);
-
-    ImGui::DragFloat("Wind Speed", &m_wind_speed);
-    ImGui::DragFloat("Wind Strength", &m_wind_strength);
-    ImGui::DragFloat("Grass LOD Distance", &m_grass_lod_distance);
-    ImGui::Checkbox("Apply View Space Thickening", &m_apply_view_space_thicken);
-
-    if (ImGui::Button("Add Grass Patch"))
+    if (ImGui::CollapsingHeader("Lights"))
     {
-        m_grass_patches.emplace_back(GrassPatch{});
-        m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
+        if (ImGui::Button("Add Directional Light"))
+        {
+            AddDirectionalLight({});
+        }
+
+        for (int i = 0; i < m_dir_lights.size(); ++i)
+        {
+            auto& dir_light = m_dir_lights[i];
+            auto& euler = m_dir_light_eulers[i];
+            ImGui::PushID(i);
+            if (ImGui::SliderFloat3("Light Rotation (Euler)", glm::value_ptr(euler), -180.0f, 180.0f))
+            {
+                glm::mat4 rot = glm::yawPitchRoll(glm::radians(euler.y), glm::radians(euler.x), glm::radians(euler.z));
+                glm::vec3 forward = glm::vec3(0.0f, 0.0f, -1.0f);
+                dir_light.direction = glm::normalize(glm::vec3(rot * glm::vec4(forward, 0.0f)));
+                m_rebuild_lights = true;
+            }
+
+            ImGui::DragFloat("Intensity", &dir_light.intensity);
+            ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color));
+            ImGui::PopID();
+        }
     }
 
-    bool update_patches = false;
-    for (uint32_t i = 0; i < m_grass_patches.size(); ++i)
+    if (ImGui::CollapsingHeader("Grass"))
     {
-        ImGui::PushID(("Grass " + std::to_string(i)).c_str());
-        auto& patch = m_grass_patches[i];
-        if (ImGui::DragFloat3("Position", glm::value_ptr(patch.position)))
+        ImGui::DragFloat("Wind Speed", &m_wind_speed);
+        ImGui::DragFloat("Wind Strength", &m_wind_strength);
+        ImGui::DragFloat("Grass LOD Distance", &m_grass_lod_distance);
+        ImGui::Checkbox("Apply View Space Thickening", &m_apply_view_space_thicken);
+
+        if (ImGui::Button("Add Grass Patch"))
         {
-            update_patches = true;
+            m_grass_patches.emplace_back(GrassPatch{});
+            m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
         }
-        if (ImGui::DragFloat("Height", &patch.height))
+
+        bool update_patches = false;
+        for (uint32_t i = 0; i < m_grass_patches.size(); ++i)
         {
-            update_patches = true;
+            ImGui::PushID(("Grass " + std::to_string(i)).c_str());
+            auto& patch = m_grass_patches[i];
+            if (ImGui::DragFloat3("Position", glm::value_ptr(patch.position)))
+            {
+                update_patches = true;
+            }
+            if (ImGui::DragFloat("Height", &patch.height))
+            {
+                update_patches = true;
+            }
+            if (ImGui::DragFloat("Radius", &patch.radius))
+            {
+                update_patches = true;
+            }
+            ImGui::PopID();
         }
-        if (ImGui::DragFloat("Radius", &patch.radius))
+        if (update_patches)
         {
-            update_patches = true;
+            m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
         }
-        ImGui::PopID();
     }
-    if (update_patches)
+
+    if (ImGui::CollapsingHeader("Volumetric Fog"))
     {
-        m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
+        ImGui::DragFloat("Fog Density", &m_fog_density);
+        ImGui::DragFloat("Fog Max Distance", &m_fog_max_distance);
+        ImGui::DragFloat3("Fog Color", glm::value_ptr(m_fog_color));
+        ImGui::DragInt("Ray March Steps", reinterpret_cast<int*>(&m_raymarch_steps));
     }
 
     ImGui::End();
@@ -224,13 +261,21 @@ void Renderer::Update()
         ImGui::End();
     }
 
+    auto* render_target_texture = m_context->GetCurrentSwapchainTexture();
+    command->TransitionResource(m_fog_texture->GetResource(), Swift::ResourceState::eCopySource);
+    command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::eCopyDest);
+    command->CopyResource(m_fog_texture->GetResource(), render_target_texture->GetResource());
+
     {
         GPU_ZONE(m_profiler, command, "Imgui Pass");
+        auto* render_target = m_context->GetCurrentRenderTarget();
+        command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::eRenderTarget);
+        command->BindRenderTargets(render_target, m_depth_stencil);
         ImGui::Render();
         ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
     }
 
-    command->TransitionResource(render_target->GetTexture()->GetResource(), Swift::ResourceState::ePresent);
+    command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::ePresent);
     command->End();
 
     {
@@ -288,11 +333,19 @@ void Renderer::InitContext()
                                          .Build();
     m_dummy_normal_texture.texture_srv = m_context->CreateShaderResource(m_dummy_normal_texture.texture);
 
+    m_render_target_texture = Swift::TextureBuilder(m_context, size.x, size.y)
+                                  .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
+                                  .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                  .Build();
+    m_render_target = m_context->CreateRenderTarget(m_render_target_texture);
+    m_render_target_srv = m_context->CreateShaderResource(m_render_target_texture);
+
     m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
                           .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
                           .SetFormat(Swift::Format::eD32F)
                           .Build();
     m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
+    m_depth_stencil_srv = m_context->CreateShaderResource(m_depth_texture);
     m_texture_heap = m_context->CreateHeap(
         Swift::HeapCreateInfo{ .type = Swift::HeapType::eGPU_Upload, .size = 2'500'000'000, .debug_name = "Texture Heap" });
 }
@@ -396,7 +449,7 @@ void Renderer::InitSkyboxShader()
                           .SetPixelShader(skybox_pixel_main_code)
                           .SetDepthTest(Swift::DepthTest::eGreaterEqual)
                           .SetDepthTestEnable(true)
-                          .SetDepthWriteEnable(false)
+                          .SetDepthWriteEnable(true)
                           .SetCullMode(Swift::CullMode::eNone)
                           .SetDepthTest(Swift::DepthTest::eLessEqual)
                           .SetPolygonMode(Swift::PolygonMode::eTriangle)
@@ -418,6 +471,7 @@ void Renderer::InitGrassPass()
     std::vector<Swift::Descriptor> descriptors{};
     const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
     descriptors.emplace_back(descriptor);
+    const std::vector<Swift::SamplerDescriptor> samplers{ {} };
     m_grass_shader = Swift::GraphicsShaderBuilder(m_context)
                          .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
                          .SetDSVFormat(Swift::Format::eD32F)
@@ -430,8 +484,39 @@ void Renderer::InitGrassPass()
                          .SetDepthTest(Swift::DepthTest::eLess)
                          .SetPolygonMode(Swift::PolygonMode::eTriangle)
                          .SetDescriptors(descriptors)
+                         .SetStaticSamplers(samplers)
                          .SetName("Grass Shader")
                          .Build();
+}
+
+void Renderer::InitVolumetricFog()
+{
+    const auto size = m_engine->GetWindow().GetSize();
+    m_fog_texture = Swift::TextureBuilder(m_context, size.x, size.y)
+                        .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
+                        .SetFormat(Swift::Format::eRGBA8_UNORM)
+                        .Build();
+    m_fog_rtv = m_context->CreateRenderTarget(m_fog_texture);
+    m_fog_srv = m_context->CreateShaderResource(m_fog_texture);
+    std::vector<Swift::Descriptor> descriptors{};
+    const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
+    descriptors.emplace_back(descriptor);
+    const std::vector samplers{
+        Swift::SamplerDescriptor{
+            .min_filter = Swift::Filter::eNearest,
+            .mag_filter = Swift::Filter::eNearest,
+        },
+        {},
+    };
+    m_fog_shader = Swift::GraphicsShaderBuilder(m_context)
+                       .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                       .SetMeshShader(fog_mesh_main_code)
+                       .SetPixelShader(fog_pixel_main_code)
+                       .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                       .SetDescriptors(descriptors)
+                       .SetStaticSamplers(samplers)
+                       .SetName("Volumetric Fog Shader")
+                       .Build();
 }
 
 void Renderer::InitPBRShader()
@@ -628,8 +713,7 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    auto* render_target = m_context->GetCurrentRenderTarget();
-    command->BindRenderTargets(render_target, m_depth_stencil);
+    command->BindRenderTargets(m_render_target, m_depth_stencil);
     command->BindShader(m_pbr_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
 
@@ -673,6 +757,7 @@ void Renderer::DrawSkybox(Swift::ICommand* command) const
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+    command->BindRenderTargets(m_render_target, m_depth_stencil);
     command->BindShader(m_skybox_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
     command->DispatchMesh(1, 1, 1);
@@ -732,8 +817,7 @@ void Renderer::DrawGrassPass(Swift::ICommand* command) const
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    auto* render_target = m_context->GetCurrentRenderTarget();
-    command->BindRenderTargets(render_target, m_depth_stencil);
+    command->BindRenderTargets(m_render_target, m_depth_stencil);
     command->BindShader(m_grass_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
 
@@ -758,6 +842,43 @@ void Renderer::DrawGrassPass(Swift::ICommand* command) const
 
     const uint32_t num_amp_groups = (m_grass_patches.size() + 31 / 32);
     command->DispatchMesh(num_amp_groups, 1, 1);
+}
+
+void Renderer::DrawVolumetricFog(Swift::ICommand* command) const
+{
+    command->TransitionResource(m_render_target_texture->GetResource(), Swift::ResourceState::eShaderResource);
+    command->TransitionResource(m_depth_texture->GetResource(), Swift::ResourceState::eShaderResource);
+    command->TransitionResource(m_fog_texture->GetResource(), Swift::ResourceState::eRenderTarget);
+    auto& camera = m_engine->GetCamera();
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+    command->BindShader(m_fog_shader);
+    command->BindConstantBuffer(m_global_constant_buffer, 1);
+    command->BindRenderTargets(m_fog_rtv, nullptr);
+    const struct PushConstant
+    {
+        glm::mat4 inv_view_proj;
+        uint32_t scene_texture_index;
+        uint32_t depth_texture_index;
+        float fog_density;
+        float fog_max_distance;
+
+        glm::vec3 fog_color;
+        uint32_t ray_march_steps;
+    } pc{
+        .inv_view_proj = glm::inverse(camera.m_proj_matrix * camera.m_view_matrix),
+        .scene_texture_index = m_render_target_srv->GetDescriptorIndex(),
+        .depth_texture_index = m_depth_stencil_srv->GetDescriptorIndex(),
+        .fog_density = m_fog_density,
+        .fog_max_distance = m_fog_max_distance,
+        .fog_color = m_fog_color,
+        .ray_march_steps = m_raymarch_steps,
+    };
+    command->PushConstants(&pc, sizeof(PushConstant));
+    command->DispatchMesh(1, 1, 1);
 }
 
 void Renderer::InitImgui()
