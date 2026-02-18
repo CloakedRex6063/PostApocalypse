@@ -41,9 +41,8 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
             m_context->ResizeBuffers(size.x, size.y);
             m_render_texture.Destroy(m_context);
             m_depth_texture.Destroy(m_context);
-            m_context->DestroyRenderTarget(m_fog_rtv);
-            m_context->DestroyShaderResource(m_fog_srv);
-            m_context->DestroyTexture(m_fog_texture);
+            m_post_process.m_dst_texture.Destroy(m_context);
+            m_post_process.m_src_texture.Destroy(m_context);
 
             m_render_texture =
                 TextureViewBuilder(m_context, size)
@@ -51,12 +50,16 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
                     .SetFormat(Swift::Format::eRGBA8_UNORM)
                     .Build();
 
-            m_fog_texture = Swift::TextureBuilder(m_context, size.x, size.y)
-                                .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
-                                .SetFormat(Swift::Format::eRGBA8_UNORM)
-                                .Build();
-            m_fog_rtv = m_context->CreateRenderTarget(m_fog_texture);
-            m_fog_srv = m_context->CreateShaderResource(m_fog_texture);
+            m_post_process.m_src_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eRGBA8_UNORM)
+                    .Build();
+            m_post_process.m_dst_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eRGBA8_UNORM)
+                    .Build();
 
             m_depth_texture =
                 TextureViewBuilder(m_context, size)
@@ -281,9 +284,9 @@ void Renderer::Update()
     ImGui::End();
 
     auto* render_target_texture = m_context->GetCurrentSwapchainTexture();
-    command->TransitionResource(m_fog_texture->GetResource(), Swift::ResourceState::eCopySource);
+    command->TransitionResource(m_post_process.m_dst_texture.texture->GetResource(), Swift::ResourceState::eCopySource);
     command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::eCopyDest);
-    command->CopyResource(m_fog_texture->GetResource(), render_target_texture->GetResource());
+    command->CopyResource(m_post_process.m_dst_texture.texture->GetResource(), render_target_texture->GetResource());
 
     RenderImGUI(command, render_target_texture);
 
@@ -351,6 +354,18 @@ void Renderer::InitContext()
                           .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil) | Swift::TextureFlags::eShaderResource)
                           .SetFormat(Swift::Format::eD32F)
                           .Build();
+
+    m_post_process.m_src_texture =
+        TextureViewBuilder(m_context, size)
+            .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+            .SetFormat(Swift::Format::eRGBA8_UNORM)
+            .Build();
+    m_post_process.m_dst_texture =
+        TextureViewBuilder(m_context, size)
+            .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+            .SetFormat(Swift::Format::eRGBA8_UNORM)
+            .Build();
+
     m_texture_heap = m_context->CreateHeap(
         Swift::HeapCreateInfo{ .type = Swift::HeapType::eGPU_Upload, .size = 2'500'000'000, .debug_name = "Texture Heap" });
 }
@@ -454,13 +469,6 @@ void Renderer::InitGrassPass()
 
 void Renderer::InitVolumetricFog()
 {
-    const auto size = m_engine->GetWindow().GetSize();
-    m_fog_texture = Swift::TextureBuilder(m_context, size.x, size.y)
-                        .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
-                        .SetFormat(Swift::Format::eRGBA8_UNORM)
-                        .Build();
-    m_fog_rtv = m_context->CreateRenderTarget(m_fog_texture);
-    m_fog_srv = m_context->CreateShaderResource(m_fog_texture);
     std::vector<Swift::Descriptor> descriptors{};
     const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
     descriptors.emplace_back(descriptor);
@@ -793,11 +801,12 @@ void Renderer::DrawGrassPass(Swift::ICommand* command) const
     command->DispatchMesh(num_amp_groups, 1, 1);
 }
 
-void Renderer::DrawVolumetricFog(Swift::ICommand* command) const
+void Renderer::DrawVolumetricFog(Swift::ICommand* command)
 {
+    m_post_process.Swap();
     command->TransitionResource(m_render_texture.texture->GetResource(), Swift::ResourceState::eShaderResource);
     command->TransitionResource(m_depth_texture.texture->GetResource(), Swift::ResourceState::eShaderResource);
-    command->TransitionResource(m_fog_texture->GetResource(), Swift::ResourceState::eRenderTarget);
+    command->TransitionResource(m_post_process.m_dst_texture.texture->GetResource(), Swift::ResourceState::eRenderTarget);
     auto& camera = m_engine->GetCamera();
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
@@ -806,7 +815,7 @@ void Renderer::DrawVolumetricFog(Swift::ICommand* command) const
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
     command->BindShader(m_fog_pass.m_fog_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
-    command->BindRenderTargets(m_fog_rtv, nullptr);
+    command->BindRenderTargets(m_post_process.m_dst_texture.render_target, nullptr);
     const struct PushConstant
     {
         glm::mat4 inv_view_proj;

@@ -335,7 +335,7 @@ private:
     void DrawSkybox(Swift::ICommand* command) const;
     void DrawShadowPass(Swift::ICommand* command) const;
     void DrawGrassPass(Swift::ICommand* command) const;
-    void DrawVolumetricFog(Swift::ICommand* command) const;
+    void DrawVolumetricFog(Swift::ICommand* command);
     void InitImgui() const;
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
@@ -403,9 +403,16 @@ private:
         Swift::IShader* m_fog_shader = nullptr;
     } m_fog_pass;
 
-    Swift::ITexture* m_fog_texture = nullptr;
-    Swift::IRenderTarget* m_fog_rtv = nullptr;
-    Swift::ITextureSRV* m_fog_srv = nullptr;
+    struct PostProcess
+    {
+        TextureView m_src_texture;
+        TextureView m_dst_texture;
+
+        void Swap()
+        {
+            std::swap(m_src_texture, m_dst_texture);
+        }
+    } m_post_process;
 
     struct GrassPass
     {
