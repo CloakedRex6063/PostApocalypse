@@ -9,7 +9,6 @@ public:
     ~GPUProfiler();
 
     void NewFrame() const;
-    void Collect() const;
     TracyD3D12Ctx GetTracyContext() const { return m_tracy_context; }
 
 private:

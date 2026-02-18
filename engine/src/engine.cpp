@@ -14,7 +14,7 @@ Engine::Engine()
     m_renderer->SetSkybox(skybox_texture, ibl_texture);
     DirectionalLight dir_light{
         .intensity = 1.f,
-        .color = glm::vec3(1.0f, 0.95f, 0.8f),
+        .color = glm::vec3(1.0f, 0.75f, 0.3f),
         .cast_shadows = true,
     };
     dir_light.SetDirectionEuler(glm::vec3(-45.0f, 135.0f, 0.0f));

@@ -9,6 +9,9 @@ GPUProfiler::GPUProfiler(Swift::IContext* context) : m_context(context)
 }
 GPUProfiler::~GPUProfiler() { TracyD3D12Destroy(m_tracy_context); }
 
-void GPUProfiler::NewFrame() const { m_tracy_context->NewFrame(); }
+void GPUProfiler::NewFrame() const
+{
+    m_tracy_context->Collect();
+    m_tracy_context->NewFrame();
+}
 
-void GPUProfiler::Collect() const { m_tracy_context->Collect(); }

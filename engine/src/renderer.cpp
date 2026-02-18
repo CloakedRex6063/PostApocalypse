@@ -39,22 +39,17 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
         {
             m_context->GetGraphicsQueue()->WaitIdle();
             m_context->ResizeBuffers(size.x, size.y);
-            m_context->DestroyRenderTarget(m_render_target);
-            m_context->DestroyShaderResource(m_render_target_srv);
-            m_context->DestroyTexture(m_render_target_texture);
-            m_context->DestroyDepthStencil(m_depth_stencil);
-            m_context->DestroyShaderResource(m_depth_stencil_srv);
-            m_context->DestroyTexture(m_depth_texture);
+            m_render_texture.Destroy(m_context);
+            m_depth_texture.Destroy(m_context);
             m_context->DestroyRenderTarget(m_fog_rtv);
             m_context->DestroyShaderResource(m_fog_srv);
             m_context->DestroyTexture(m_fog_texture);
 
-            m_render_target_texture = Swift::TextureBuilder(m_context, size.x, size.y)
-                                          .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
-                                          .SetFormat(Swift::Format::eRGBA8_UNORM)
-                                          .Build();
-            m_render_target = m_context->CreateRenderTarget(m_render_target_texture);
-            m_render_target_srv = m_context->CreateShaderResource(m_render_target_texture);
+            m_render_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eRGBA8_UNORM)
+                    .Build();
 
             m_fog_texture = Swift::TextureBuilder(m_context, size.x, size.y)
                                 .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
@@ -63,13 +58,11 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
             m_fog_rtv = m_context->CreateRenderTarget(m_fog_texture);
             m_fog_srv = m_context->CreateShaderResource(m_fog_texture);
 
-            m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
-                                  .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
-                                  .SetFormat(Swift::Format::eD32F)
-                                  .SetMipmapLevels(0)
-                                  .Build();
-            m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
-            m_depth_stencil_srv = m_context->CreateShaderResource(m_depth_texture);
+            m_depth_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eD32F)
+                    .Build();
         });
 }
 
@@ -78,11 +71,7 @@ Renderer::~Renderer()
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-    if (m_skybox_texture.texture)
-    {
-        m_context->DestroyTexture(m_skybox_texture.texture);
-        m_context->DestroyShaderResource(m_skybox_texture.texture_srv);
-    }
+    m_skybox_pass.m_skybox_texture.Destroy(m_context);
     Swift::DestroyContext(m_context);
 }
 
@@ -101,107 +90,42 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
         .proj = camera.m_proj_matrix,
         .sun_view_proj = sun_proj * sun_view,
         .cam_pos = camera.m_position,
-        .cubemap_index = m_skybox_texture.texture_srv->GetDescriptorIndex(),
-        .transform_buffer_index = m_transform_buffer_srv->GetDescriptorIndex(),
-        .material_buffer_index = m_material_buffer_srv->GetDescriptorIndex(),
-        .cull_data_buffer_index = m_cull_data_buffer_srv->GetDescriptorIndex(),
-        .frustum_buffer_index = m_frustum_buffer_srv->GetDescriptorIndex(),
-        .point_light_buffer_index = m_point_light_buffer_srv->GetDescriptorIndex(),
-        .dir_light_buffer_index = m_dir_light_buffer_srv->GetDescriptorIndex(),
+        .cubemap_index = m_skybox_pass.m_skybox_texture.GetSRVDescriptorIndex(),
+        .transform_buffer_index = m_transform_buffer.GetDescriptorIndex(),
+        .material_buffer_index = m_material_buffer.GetDescriptorIndex(),
+        .cull_data_buffer_index = m_cull_data_buffer.GetDescriptorIndex(),
+        .frustum_buffer_index = m_frustum_buffer.GetDescriptorIndex(),
+        .point_light_buffer_index = m_point_light_buffer.GetDescriptorIndex(),
+        .dir_light_buffer_index = m_dir_light_buffer.GetDescriptorIndex(),
         .point_light_count = static_cast<uint32_t>(m_point_lights.size()),
         .dir_light_count = static_cast<uint32_t>(m_dir_lights.size()),
-        .shadow_texture_index = m_shadow_texture_srv->GetDescriptorIndex(),
-        .grass_buffer_index = m_grass_buffer_srv->GetDescriptorIndex(),
+        .shadow_texture_index = m_shadow_pass.m_shadow_texture.GetSRVDescriptorIndex(),
+        .grass_buffer_index = m_grass_pass.m_grass_buffer.GetDescriptorIndex(),
     };
     m_global_constant_buffer->Write(&info, 0, sizeof(GlobalConstantInfo));
 }
-void Renderer::Update()
+void Renderer::UpdateGrassDialog()
 {
-    CPU_ZONE("Rendering Loop");
-    auto* command = m_context->GetCurrentCommand();
-
-    auto& camera = m_engine->GetCamera();
-
-    UpdateGlobalConstantBuffer(camera);
-
-    {
-        CPU_ZONE("Update Buffers")
-        const auto frustum = camera.CreateFrustum();
-        m_frustum_buffer->Write(&frustum, 0, sizeof(Frustum));
-
-        m_dir_light_buffer->Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
-    }
-
-    m_profiler->Collect();
-    m_profiler->NewFrame();
-
-    ImGui_ImplDX12_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-
-    command->Begin();
-
-    {
-        GPU_ZONE(m_profiler, command, "Clear Textures")
-        command->TransitionResource(m_render_target_texture->GetResource(), Swift::ResourceState::eRenderTarget);
-        command->ClearRenderTarget(m_render_target, {});
-        command->ClearRenderTarget(m_render_target, {});
-        command->TransitionResource(m_depth_texture->GetResource(), Swift::ResourceState::eDepthWrite);
-        command->ClearDepthStencil(m_depth_stencil, 1.f, 0);
-    }
-
-    DrawGeometry(command);
-    DrawGrassPass(command);
-    DrawSkybox(command);
-    DrawVolumetricFog(command);
-
-    ImGui::Begin("Debugging");
-
-    ImGui::DragFloat("Move Speed", &camera.m_move_speed);
-    if (ImGui::CollapsingHeader("Lights"))
-    {
-        if (ImGui::Button("Add Directional Light"))
-        {
-            AddDirectionalLight({});
-        }
-
-        for (int i = 0; i < m_dir_lights.size(); ++i)
-        {
-            auto& dir_light = m_dir_lights[i];
-            auto& euler = m_dir_light_eulers[i];
-            ImGui::PushID(i);
-            if (ImGui::SliderFloat3("Light Rotation (Euler)", glm::value_ptr(euler), -180.0f, 180.0f))
-            {
-                glm::mat4 rot = glm::yawPitchRoll(glm::radians(euler.y), glm::radians(euler.x), glm::radians(euler.z));
-                glm::vec3 forward = glm::vec3(0.0f, 0.0f, -1.0f);
-                dir_light.direction = glm::normalize(glm::vec3(rot * glm::vec4(forward, 0.0f)));
-                m_rebuild_lights = true;
-            }
-
-            ImGui::DragFloat("Intensity", &dir_light.intensity);
-            ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color));
-            ImGui::PopID();
-        }
-    }
-
     if (ImGui::CollapsingHeader("Grass"))
     {
-        ImGui::DragFloat("Wind Speed", &m_wind_speed);
-        ImGui::DragFloat("Wind Strength", &m_wind_strength);
-        ImGui::DragFloat("Grass LOD Distance", &m_grass_lod_distance);
-        ImGui::Checkbox("Apply View Space Thickening", &m_apply_view_space_thicken);
+        ImGui::DragFloat("Wind Speed", &m_grass_pass.m_wind_speed);
+        ImGui::DragFloat("Wind Strength", &m_grass_pass.m_wind_strength);
+        ImGui::DragFloat("Grass LOD Distance", &m_grass_pass.m_grass_lod_distance);
+        ImGui::Checkbox("Apply View Space Thickening", &m_grass_pass.m_apply_view_space_thicken);
 
         if (ImGui::Button("Add Grass Patch"))
         {
-            m_grass_patches.emplace_back(GrassPatch{});
-            m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
+            m_grass_pass.m_grass_patches.emplace_back(GrassPatch{});
+            m_grass_pass.m_grass_buffer.Write(m_grass_pass.m_grass_patches.data(),
+                                              0,
+                                              sizeof(GrassPatch) * m_grass_pass.m_grass_patches.size());
         }
 
         bool update_patches = false;
-        for (uint32_t i = 0; i < m_grass_patches.size(); ++i)
+        for (uint32_t i = 0; i < m_grass_pass.m_grass_patches.size(); ++i)
         {
             ImGui::PushID(("Grass " + std::to_string(i)).c_str());
-            auto& patch = m_grass_patches[i];
+            auto& patch = m_grass_pass.m_grass_patches[i];
             if (ImGui::DragFloat3("Position", glm::value_ptr(patch.position)))
             {
                 update_patches = true;
@@ -218,25 +142,62 @@ void Renderer::Update()
         }
         if (update_patches)
         {
-            m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
+            m_grass_pass.m_grass_buffer.Write(m_grass_pass.m_grass_patches.data(),
+                                              0,
+                                              sizeof(GrassPatch) * m_grass_pass.m_grass_patches.size());
+        }
+    }
+}
+void Renderer::UpdateFogDialog()
+{
+    if (ImGui::CollapsingHeader("Volumetric Fog"))
+    {
+        ImGui::DragFloat("Fog Density", &m_fog_pass.m_fog_density);
+        ImGui::DragFloat("Fog Max Distance", &m_fog_pass.m_fog_max_distance);
+        ImGui::DragFloat3("Fog Color", glm::value_ptr(m_fog_pass.m_fog_color));
+        ImGui::DragInt("Ray March Steps", reinterpret_cast<int*>(&m_fog_pass.m_raymarch_steps));
+    }
+}
+void Renderer::UpdateLightsDialog(Camera& camera)
+{
+    ImGui::DragFloat("Move Speed", &camera.m_move_speed);
+    if (ImGui::CollapsingHeader("Lights"))
+    {
+        if (ImGui::Button("Add Directional Light"))
+        {
+            AddDirectionalLight({});
+        }
+
+        for (int i = 0; i < m_dir_lights.size(); ++i)
+        {
+            auto& dir_light = m_dir_lights[i];
+            auto& euler = m_dir_light_eulers[i];
+            ImGui::PushID(i);
+            if (ImGui::SliderFloat3("Light Rotation (Euler)", glm::value_ptr(euler), -180.0f, 180.0f))
+            {
+                glm::mat4 rot = glm::yawPitchRoll(glm::radians(euler.y), glm::radians(euler.x), glm::radians(euler.z));
+                auto forward = glm::vec3(0.0f, 0.0f, -1.0f);
+                dir_light.direction = glm::normalize(glm::vec3(rot * glm::vec4(forward, 0.0f)));
+                m_rebuild_lights = true;
+            }
+
+            if (ImGui::DragFloat("Intensity", &dir_light.intensity))
+            {
+                m_rebuild_lights = true;
+            }
+            if (ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color)))
+            {
+                m_rebuild_lights = true;
+            }
+            ImGui::PopID();
         }
     }
 
-    if (ImGui::CollapsingHeader("Volumetric Fog"))
-    {
-        ImGui::DragFloat("Fog Density", &m_fog_density);
-        ImGui::DragFloat("Fog Max Distance", &m_fog_max_distance);
-        ImGui::DragFloat3("Fog Color", glm::value_ptr(m_fog_color));
-        ImGui::DragInt("Ray March Steps", reinterpret_cast<int*>(&m_raymarch_steps));
-    }
-
-    ImGui::End();
-
     if (m_rebuild_lights)
     {
-        ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
-                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar;
+        constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
+                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                           ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar;
 
         ImGuiIO& io = ImGui::GetIO();
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, 10), ImGuiCond_Always, ImVec2(1, 0));
@@ -254,26 +215,77 @@ void Renderer::Update()
         if (ImGui::Button("Rebuild Lights"))
         {
             GenerateStaticShadowMap();
+            m_dir_light_buffer.Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
             m_rebuild_lights = false;
         }
 
         ImGui::PopStyleColor(4);
         ImGui::End();
     }
+}
+void Renderer::RenderImGUI(Swift::ICommand* command, const Swift::ITexture* render_target_texture) const
+{
+    GPU_ZONE(m_profiler, command, "Imgui Pass");
+    auto* render_target = m_context->GetCurrentRenderTarget();
+    command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::eRenderTarget);
+    command->BindRenderTargets(render_target, m_depth_texture.depth_stencil);
+    ImGui::Render();
+    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
+}
+void Renderer::ClearTextures(Swift::ICommand* command) const
+{
+    GPU_ZONE(m_profiler, command, "Clear Textures")
+    command->TransitionResource(m_render_texture.texture->GetResource(), Swift::ResourceState::eRenderTarget);
+    command->ClearRenderTarget(m_render_texture.render_target, {});
+    command->TransitionResource(m_depth_texture.texture->GetResource(), Swift::ResourceState::eDepthWrite);
+    command->ClearDepthStencil(m_depth_texture.depth_stencil, 1.f, 0);
+}
+void Renderer::ImGUINewFrame()
+{
+    ImGui_ImplDX12_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+}
+void Renderer::Update()
+{
+    CPU_ZONE("Rendering Loop");
+    auto* command = m_context->GetCurrentCommand();
+
+    auto& camera = m_engine->GetCamera();
+
+    UpdateGlobalConstantBuffer(camera);
+
+    {
+        CPU_ZONE("Update Frustum Buffer")
+        const auto frustum = camera.CreateFrustum();
+        m_frustum_buffer.Write(&frustum, 0, sizeof(Frustum));
+    }
+
+    m_profiler->NewFrame();
+
+    ImGUINewFrame();
+
+    command->Begin();
+
+    ClearTextures(command);
+
+    DrawGeometry(command);
+    DrawGrassPass(command);
+    DrawSkybox(command);
+    DrawVolumetricFog(command);
+
+    ImGui::Begin("Debugging");
+    UpdateLightsDialog(camera);
+    UpdateGrassDialog();
+    UpdateFogDialog();
+    ImGui::End();
 
     auto* render_target_texture = m_context->GetCurrentSwapchainTexture();
     command->TransitionResource(m_fog_texture->GetResource(), Swift::ResourceState::eCopySource);
     command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::eCopyDest);
     command->CopyResource(m_fog_texture->GetResource(), render_target_texture->GetResource());
 
-    {
-        GPU_ZONE(m_profiler, command, "Imgui Pass");
-        auto* render_target = m_context->GetCurrentRenderTarget();
-        command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::eRenderTarget);
-        command->BindRenderTargets(render_target, m_depth_stencil);
-        ImGui::Render();
-        ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
-    }
+    RenderImGUI(command, render_target_texture);
 
     command->TransitionResource(render_target_texture->GetResource(), Swift::ResourceState::ePresent);
     command->End();
@@ -310,42 +322,35 @@ void Renderer::InitContext()
     });
 
     constexpr auto white = 0xFFFFFFFF;
-    m_dummy_white_texture.texture = Swift::TextureBuilder(m_context, 1, 1)
-                                        .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
-                                        .SetFormat(Swift::Format::eRGBA8_UNORM)
-                                        .SetData(&white)
-                                        .Build();
-    m_dummy_white_texture.texture_srv = m_context->CreateShaderResource(m_dummy_white_texture.texture);
+    m_dummy_white_texture = TextureViewBuilder(m_context, { 1, 1 })
+                                .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
+                                .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                .SetData(&white)
+                                .Build();
 
     constexpr auto black = 0xFF000000;
-    m_dummy_black_texture.texture = Swift::TextureBuilder(m_context, 1, 1)
-                                        .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
-                                        .SetFormat(Swift::Format::eRGBA8_UNORM)
-                                        .SetData(&black)
-                                        .Build();
-    m_dummy_black_texture.texture_srv = m_context->CreateShaderResource(m_dummy_black_texture.texture);
+    m_dummy_black_texture = TextureViewBuilder(m_context, { 1, 1 })
+                                .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
+                                .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                .SetData(&black)
+                                .Build();
 
     constexpr auto normal = 0xFFFF8080;
-    m_dummy_normal_texture.texture = Swift::TextureBuilder(m_context, 1, 1)
-                                         .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
-                                         .SetFormat(Swift::Format::eRGBA8_UNORM)
-                                         .SetData(&normal)
-                                         .Build();
-    m_dummy_normal_texture.texture_srv = m_context->CreateShaderResource(m_dummy_normal_texture.texture);
+    m_dummy_normal_texture = TextureViewBuilder(m_context, { 1, 1 })
+                                 .SetFlags(EnumFlags(Swift::TextureFlags::eShaderResource))
+                                 .SetFormat(Swift::Format::eRGBA8_UNORM)
+                                 .SetData(&normal)
+                                 .Build();
 
-    m_render_target_texture = Swift::TextureBuilder(m_context, size.x, size.y)
-                                  .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget))
-                                  .SetFormat(Swift::Format::eRGBA8_UNORM)
-                                  .Build();
-    m_render_target = m_context->CreateRenderTarget(m_render_target_texture);
-    m_render_target_srv = m_context->CreateShaderResource(m_render_target_texture);
+    m_render_texture = TextureViewBuilder(m_context, size)
+                           .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                           .SetFormat(Swift::Format::eRGBA8_UNORM)
+                           .Build();
 
-    m_depth_texture = Swift::TextureBuilder(m_context, size.x, size.y)
-                          .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil))
+    m_depth_texture = TextureViewBuilder(m_context, size)
+                          .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil) | Swift::TextureFlags::eShaderResource)
                           .SetFormat(Swift::Format::eD32F)
                           .Build();
-    m_depth_stencil = m_context->CreateDepthStencil(m_depth_texture);
-    m_depth_stencil_srv = m_context->CreateShaderResource(m_depth_texture);
     m_texture_heap = m_context->CreateHeap(
         Swift::HeapCreateInfo{ .type = Swift::HeapType::eGPU_Upload, .size = 2'500'000'000, .debug_name = "Texture Heap" });
 }
@@ -353,62 +358,22 @@ void Renderer::InitContext()
 void Renderer::InitBuffers()
 {
     m_global_constant_buffer = Swift::BufferBuilder(m_context, 65536).Build();
-    m_transform_buffer = Swift::BufferBuilder(m_context, 10'000 * sizeof(glm::mat4)).Build();
-    m_transform_buffer_srv = m_context->CreateShaderResource(m_transform_buffer,
-                                                             Swift::BufferSRVCreateInfo{
-                                                                 .num_elements = 10'000,
-                                                                 .element_size = sizeof(glm::mat4),
-                                                                 .first_element = 0,
-                                                             });
-    m_point_light_buffer = Swift::BufferBuilder(m_context, sizeof(PointLight) * 100).Build();
-    m_point_light_buffer_srv = m_context->CreateShaderResource(m_point_light_buffer,
-                                                               Swift::BufferSRVCreateInfo{
-                                                                   .num_elements = 100,
-                                                                   .element_size = sizeof(PointLight),
-                                                               });
-    m_dir_light_buffer = Swift::BufferBuilder(m_context, sizeof(DirectionalLight) * 100).Build();
-    m_dir_light_buffer_srv = m_context->CreateShaderResource(m_dir_light_buffer,
-                                                             Swift::BufferSRVCreateInfo{
-                                                                 .num_elements = 100,
-                                                                 .element_size = sizeof(DirectionalLight),
-                                                             });
-    m_material_buffer = Swift::BufferBuilder(m_context, sizeof(Material) * 10'000).Build();
-    m_material_buffer_srv = m_context->CreateShaderResource(m_material_buffer,
-                                                            Swift::BufferSRVCreateInfo{
-                                                                .num_elements = 10'000,
-                                                                .element_size = sizeof(Material),
-                                                            });
-    m_material_buffer = Swift::BufferBuilder(m_context, sizeof(Material) * 10'000).Build();
-    m_material_buffer_srv = m_context->CreateShaderResource(m_material_buffer,
-                                                            Swift::BufferSRVCreateInfo{
-                                                                .num_elements = 10'000,
-                                                                .element_size = sizeof(Material),
-                                                            });
-    m_cull_data_buffer = Swift::BufferBuilder(m_context, 1'000'000 * sizeof(CullData)).Build();
-    m_cull_data_buffer_srv = m_context->CreateShaderResource(m_cull_data_buffer,
-                                                             Swift::BufferSRVCreateInfo{
-                                                                 .num_elements = 1'000'000,
-                                                                 .element_size = sizeof(CullData),
-                                                                 .first_element = 0,
-                                                             });
-    m_frustum_buffer = Swift::BufferBuilder(m_context, sizeof(Frustum) * 5).Build();
-    m_frustum_buffer_srv = m_context->CreateShaderResource(m_frustum_buffer,
-                                                           Swift::BufferSRVCreateInfo{
-                                                               .num_elements = 5,
-                                                               .element_size = sizeof(Frustum),
-                                                               .first_element = 0,
-                                                           });
+    m_transform_buffer = BufferViewBuilder(m_context, 10'000 * sizeof(glm::mat4)).SetNumElements(10'000).Build();
+    m_point_light_buffer = BufferViewBuilder(m_context, sizeof(PointLight) * 100).SetNumElements(100).Build();
+    m_dir_light_buffer = BufferViewBuilder(m_context, sizeof(DirectionalLight) * 100).SetNumElements(100).Build();
+    m_material_buffer = BufferViewBuilder(m_context, sizeof(Material) * 10'000).SetNumElements(10'000).Build();
+    m_cull_data_buffer = BufferViewBuilder(m_context, sizeof(CullData) * 1'000'000).SetNumElements(1'000'000).Build();
+    m_frustum_buffer = BufferViewBuilder(m_context, sizeof(Frustum)).SetNumElements(1).Build();
 }
 
 void Renderer::InitShadowPass()
 {
-    m_shadow_texture = Swift::TextureBuilder(m_context, 4096, 4096)
-                           .SetFormat(Swift::Format::eD32F)
-                           .SetFlags(Swift::TextureFlags::eDepthStencil)
-                           .SetName("Shadow Texture")
-                           .Build();
-    m_shadow_depth_stencil = m_context->CreateDepthStencil(m_shadow_texture);
-    m_shadow_texture_srv = m_context->CreateShaderResource(m_shadow_texture);
+    m_shadow_pass.m_shadow_texture =
+        TextureViewBuilder(m_context, { 4096, 4096 })
+            .SetFormat(Swift::Format::eD32F)
+            .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil) | Swift::TextureFlags::eShaderResource)
+            .SetName("Shadow Texture")
+            .Build();
     std::vector<Swift::Descriptor> descriptors{};
     const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
     descriptors.emplace_back(descriptor);
@@ -416,23 +381,23 @@ void Renderer::InitShadowPass()
         {},
     };
 
-    m_shadow_shader = Swift::GraphicsShaderBuilder(m_context)
-                          .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
-                          .SetDSVFormat(Swift::Format::eD32F)
-                          .SetMeshShader(shadow_mesh_main_code)
-                          .SetPixelShader(shadow_pixel_main_code)
-                          .SetDepthTestEnable(true)
-                          .SetDepthWriteEnable(true)
-                          .SetDepthBias(10)
-                          .SetDepthBiasClamp(0.005f)
-                          .SetSlopeScaledDepthBias(1.5f)
-                          .SetCullMode(Swift::CullMode::eFront)
-                          .SetDepthTest(Swift::DepthTest::eLess)
-                          .SetPolygonMode(Swift::PolygonMode::eTriangle)
-                          .SetDescriptors(descriptors)
-                          .SetStaticSamplers(samplers)
-                          .SetName("Shadow Shader")
-                          .Build();
+    m_shadow_pass.m_shadow_shader = Swift::GraphicsShaderBuilder(m_context)
+                                        .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                        .SetDSVFormat(Swift::Format::eD32F)
+                                        .SetMeshShader(shadow_mesh_main_code)
+                                        .SetPixelShader(shadow_pixel_main_code)
+                                        .SetDepthTestEnable(true)
+                                        .SetDepthWriteEnable(true)
+                                        .SetDepthBias(10)
+                                        .SetDepthBiasClamp(0.005f)
+                                        .SetSlopeScaledDepthBias(1.5f)
+                                        .SetCullMode(Swift::CullMode::eFront)
+                                        .SetDepthTest(Swift::DepthTest::eLess)
+                                        .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                        .SetDescriptors(descriptors)
+                                        .SetStaticSamplers(samplers)
+                                        .SetName("Shadow Shader")
+                                        .Build();
 }
 
 void Renderer::InitSkyboxShader()
@@ -442,51 +407,49 @@ void Renderer::InitSkyboxShader()
     descriptors.emplace_back(descriptor);
     const std::vector<Swift::SamplerDescriptor> samplers{ {} };
 
-    m_skybox_shader = Swift::GraphicsShaderBuilder(m_context)
-                          .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
-                          .SetDSVFormat(Swift::Format::eD32F)
-                          .SetMeshShader(skybox_mesh_main_code)
-                          .SetPixelShader(skybox_pixel_main_code)
-                          .SetDepthTest(Swift::DepthTest::eGreaterEqual)
-                          .SetDepthTestEnable(true)
-                          .SetDepthWriteEnable(true)
-                          .SetCullMode(Swift::CullMode::eNone)
-                          .SetDepthTest(Swift::DepthTest::eLessEqual)
-                          .SetPolygonMode(Swift::PolygonMode::eTriangle)
-                          .SetDescriptors(descriptors)
-                          .SetStaticSamplers(samplers)
-                          .SetName("Skybox Shader")
-                          .Build();
+    m_skybox_pass.m_skybox_shader = Swift::GraphicsShaderBuilder(m_context)
+                                        .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                        .SetDSVFormat(Swift::Format::eD32F)
+                                        .SetMeshShader(skybox_mesh_main_code)
+                                        .SetPixelShader(skybox_pixel_main_code)
+                                        .SetDepthTest(Swift::DepthTest::eGreaterEqual)
+                                        .SetDepthTestEnable(true)
+                                        .SetDepthWriteEnable(true)
+                                        .SetCullMode(Swift::CullMode::eNone)
+                                        .SetDepthTest(Swift::DepthTest::eLessEqual)
+                                        .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                        .SetDescriptors(descriptors)
+                                        .SetStaticSamplers(samplers)
+                                        .SetName("Skybox Shader")
+                                        .Build();
 }
 
 void Renderer::InitGrassPass()
 {
-    m_grass_buffer = Swift::BufferBuilder(m_context, 10'000'000 * sizeof(GrassPatch)).SetName("Grass Patch Buffer").Build();
-    m_grass_buffer_srv = m_context->CreateShaderResource(m_grass_buffer,
-                                                         Swift::BufferSRVCreateInfo{
-                                                             .num_elements = 10'000'000,
-                                                             .element_size = sizeof(GrassPatch),
-                                                         });
+    m_grass_pass.m_grass_buffer = BufferViewBuilder(m_context, 10'000'000 * sizeof(GrassPatch))
+                                      .SetNumElements(10'000'000)
+                                      .SetName("Grass Patch Buffer")
+                                      .Build();
 
     std::vector<Swift::Descriptor> descriptors{};
     const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
     descriptors.emplace_back(descriptor);
     const std::vector<Swift::SamplerDescriptor> samplers{ {} };
-    m_grass_shader = Swift::GraphicsShaderBuilder(m_context)
-                         .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
-                         .SetDSVFormat(Swift::Format::eD32F)
-                         .SetAmplificationShader(grass_ampl_main_code)
-                         .SetMeshShader(grass_mesh_main_code)
-                         .SetPixelShader(grass_pixel_main_code)
-                         .SetCullMode(Swift::CullMode::eNone)
-                         .SetDepthTestEnable(true)
-                         .SetDepthWriteEnable(true)
-                         .SetDepthTest(Swift::DepthTest::eLess)
-                         .SetPolygonMode(Swift::PolygonMode::eTriangle)
-                         .SetDescriptors(descriptors)
-                         .SetStaticSamplers(samplers)
-                         .SetName("Grass Shader")
-                         .Build();
+    m_grass_pass.m_grass_shader = Swift::GraphicsShaderBuilder(m_context)
+                                      .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                      .SetDSVFormat(Swift::Format::eD32F)
+                                      .SetAmplificationShader(grass_ampl_main_code)
+                                      .SetMeshShader(grass_mesh_main_code)
+                                      .SetPixelShader(grass_pixel_main_code)
+                                      .SetCullMode(Swift::CullMode::eNone)
+                                      .SetDepthTestEnable(true)
+                                      .SetDepthWriteEnable(true)
+                                      .SetDepthTest(Swift::DepthTest::eLess)
+                                      .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                      .SetDescriptors(descriptors)
+                                      .SetStaticSamplers(samplers)
+                                      .SetName("Grass Shader")
+                                      .Build();
 }
 
 void Renderer::InitVolumetricFog()
@@ -508,15 +471,15 @@ void Renderer::InitVolumetricFog()
         },
         {},
     };
-    m_fog_shader = Swift::GraphicsShaderBuilder(m_context)
-                       .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
-                       .SetMeshShader(fog_mesh_main_code)
-                       .SetPixelShader(fog_pixel_main_code)
-                       .SetPolygonMode(Swift::PolygonMode::eTriangle)
-                       .SetDescriptors(descriptors)
-                       .SetStaticSamplers(samplers)
-                       .SetName("Volumetric Fog Shader")
-                       .Build();
+    m_fog_pass.m_fog_shader = Swift::GraphicsShaderBuilder(m_context)
+                                  .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                  .SetMeshShader(fog_mesh_main_code)
+                                  .SetPixelShader(fog_pixel_main_code)
+                                  .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                  .SetDescriptors(descriptors)
+                                  .SetStaticSamplers(samplers)
+                                  .SetName("Volumetric Fog Shader")
+                                  .Build();
 }
 
 void Renderer::InitPBRShader()
@@ -558,26 +521,12 @@ void Renderer::InitPBRShader()
 
 std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const glm::mat4& transform)
 {
-    auto CreateBufferSRV = [this](const void* data, const size_t count, const size_t element_size)
-    {
-        auto* buffer = Swift::BufferBuilder(m_context, element_size * count).SetData(data).Build();
-        auto* srv =
-            m_context->CreateShaderResource(buffer,
-                                            Swift::BufferSRVCreateInfo{ .num_elements = static_cast<uint32_t>(count),
-                                                                        .element_size = static_cast<uint32_t>(element_size) });
-        return std::pair{ buffer, srv };
-    };
-
     struct MeshBuffers
     {
-        Swift::IBuffer* vertex_buffer;
-        Swift::IBufferSRV* vertex_srv;
-        Swift::IBuffer* meshlet_buffer;
-        Swift::IBufferSRV* meshlet_srv;
-        Swift::IBuffer* meshlet_vertex_buffer;
-        Swift::IBufferSRV* meshlet_vertex_srv;
-        Swift::IBuffer* meshlet_tris_buffer;
-        Swift::IBufferSRV* meshlet_tris_srv;
+        BufferView vertex_buffer;
+        BufferView meshlet_buffer;
+        BufferView meshlet_vertex_buffer;
+        BufferView meshlet_tris_buffer;
     };
 
     std::vector<MeshBuffers> mesh_buffers;
@@ -585,12 +534,24 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
 
     for (const auto& mesh : model.meshes)
     {
-        auto [vb, vs] = CreateBufferSRV(mesh.vertices.data(), mesh.vertices.size(), sizeof(Vertex));
-        auto [mb, ms] = CreateBufferSRV(mesh.meshlets.data(), mesh.meshlets.size(), sizeof(meshopt_Meshlet));
-        auto [mvb, mvs] = CreateBufferSRV(mesh.meshlet_vertices.data(), mesh.meshlet_vertices.size(), sizeof(uint32_t));
-        auto [mtb, mts] = CreateBufferSRV(mesh.meshlet_triangles.data(), mesh.meshlet_triangles.size(), sizeof(uint32_t));
-
-        mesh_buffers.push_back({ vb, vs, mb, ms, mvb, mvs, mtb, mts });
+        MeshBuffers mesh_buffer;
+        mesh_buffer.vertex_buffer = BufferViewBuilder(m_context, sizeof(Vertex) * mesh.vertices.size())
+                                        .SetData(mesh.vertices.data())
+                                        .SetNumElements(mesh.vertices.size())
+                                        .Build();
+        mesh_buffer.meshlet_buffer = BufferViewBuilder(m_context, sizeof(meshopt_Meshlet) * mesh.meshlets.size())
+                                         .SetData(mesh.meshlets.data())
+                                         .SetNumElements(mesh.meshlets.size())
+                                         .Build();
+        mesh_buffer.meshlet_vertex_buffer = BufferViewBuilder(m_context, sizeof(uint32_t) * mesh.meshlet_vertices.size())
+                                                .SetData(mesh.meshlet_vertices.data())
+                                                .SetNumElements(mesh.meshlet_vertices.size())
+                                                .Build();
+        mesh_buffer.meshlet_tris_buffer = BufferViewBuilder(m_context, sizeof(uint32_t) * mesh.meshlet_triangles.size())
+                                              .SetData(mesh.meshlet_triangles.data())
+                                              .SetNumElements(mesh.meshlet_triangles.size())
+                                              .Build();
+        mesh_buffers.push_back(mesh_buffer);
     }
 
     uint32_t heap_offset = 0;
@@ -616,48 +577,47 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
     {
         if (material.albedo_index != -1)
         {
-            material.albedo_index = m_textures[texture_offset + material.albedo_index].texture_srv->GetDescriptorIndex();
+            material.albedo_index = m_textures[texture_offset + material.albedo_index].GetSRVDescriptorIndex();
         }
         else
         {
-            material.albedo_index = m_dummy_white_texture.texture_srv->GetDescriptorIndex();
+            material.albedo_index = m_dummy_white_texture.GetSRVDescriptorIndex();
         }
 
         if (material.metal_rough_index != -1)
         {
-            material.metal_rough_index =
-                m_textures[texture_offset + material.metal_rough_index].texture_srv->GetDescriptorIndex();
+            material.metal_rough_index = m_textures[texture_offset + material.metal_rough_index].GetSRVDescriptorIndex();
         }
         else
         {
-            material.metal_rough_index = m_dummy_white_texture.texture_srv->GetDescriptorIndex();
+            material.metal_rough_index = m_dummy_white_texture.GetSRVDescriptorIndex();
         }
 
         if (material.occlusion_index != -1)
         {
-            material.occlusion_index = m_textures[texture_offset + material.occlusion_index].texture_srv->GetDescriptorIndex();
+            material.occlusion_index = m_textures[texture_offset + material.occlusion_index].GetSRVDescriptorIndex();
         }
         else
         {
-            material.occlusion_index = m_dummy_white_texture.texture_srv->GetDescriptorIndex();
+            material.occlusion_index = m_dummy_white_texture.GetSRVDescriptorIndex();
         }
 
         if (material.emissive_index != -1)
         {
-            material.emissive_index = m_textures[texture_offset + material.emissive_index].texture_srv->GetDescriptorIndex();
+            material.emissive_index = m_textures[texture_offset + material.emissive_index].GetSRVDescriptorIndex();
         }
         else
         {
-            material.emissive_index = m_dummy_black_texture.texture_srv->GetDescriptorIndex();
+            material.emissive_index = m_dummy_black_texture.GetSRVDescriptorIndex();
         }
 
         if (material.normal_index != -1)
         {
-            material.normal_index = m_textures[texture_offset + material.normal_index].texture_srv->GetDescriptorIndex();
+            material.normal_index = m_textures[texture_offset + material.normal_index].GetSRVDescriptorIndex();
         }
         else
         {
-            material.normal_index = m_dummy_normal_texture.texture_srv->GetDescriptorIndex();
+            material.normal_index = m_dummy_normal_texture.GetSRVDescriptorIndex();
         }
     }
 
@@ -667,14 +627,7 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
     for (const auto& node : model.nodes)
     {
         const auto& mesh = model.meshes[node.mesh_index];
-        const auto& [vertex_buffer,
-                     vertex_srv,
-                     meshlet_buffer,
-                     meshlet_srv,
-                     meshlet_vertex_buffer,
-                     meshlet_vertex_srv,
-                     meshlet_tris_buffer,
-                     meshlet_tris_srv] = mesh_buffers[node.mesh_index];
+        const auto& [vertex_buffer, meshlet_buffer, meshlet_vertex_buffer, meshlet_tris_buffer] = mesh_buffers[node.mesh_index];
         const auto transform_index = static_cast<uint32_t>(m_transforms.size());
         auto final_transform = transform * model.transforms[node.transform_index];
         m_transforms.emplace_back(final_transform);
@@ -682,13 +635,9 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
         m_materials.emplace_back(model.materials[mesh.material_index]);
         renderers.push_back({
             .m_vertex_buffer = vertex_buffer,
-            .m_vertex_buffer_srv = vertex_srv,
             .m_mesh_buffer = meshlet_buffer,
-            .m_mesh_buffer_srv = meshlet_srv,
             .m_mesh_vertex_buffer = meshlet_vertex_buffer,
-            .m_mesh_vertex_buffer_srv = meshlet_vertex_srv,
             .m_mesh_triangle_buffer = meshlet_tris_buffer,
-            .m_mesh_triangle_buffer_srv = meshlet_tris_srv,
             .m_meshlet_count = static_cast<uint32_t>(mesh.meshlets.size()),
             .m_material_index = material_index,
             .m_transform_index = transform_index,
@@ -713,7 +662,7 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindRenderTargets(m_render_target, m_depth_stencil);
+    command->BindRenderTargets(m_render_texture.render_target, m_depth_texture.depth_stencil);
     command->BindShader(m_pbr_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
 
@@ -733,15 +682,15 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
 
             uint32_t ibl_index;
         } push_constants{
-            .vertex_buffer = renderable.m_vertex_buffer_srv->GetDescriptorIndex(),
-            .meshlet_buffer = renderable.m_mesh_buffer_srv->GetDescriptorIndex(),
-            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer_srv->GetDescriptorIndex(),
-            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer_srv->GetDescriptorIndex(),
+            .vertex_buffer = renderable.m_vertex_buffer.GetDescriptorIndex(),
+            .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
+            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
+            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
             .material_index = renderable.m_material_index,
             .transform_index = renderable.m_transform_index,
             .meshlet_count = renderable.m_meshlet_count,
             .bounding_offset = renderable.m_bounding_offset,
-            .ibl_index = m_specular_ibl_texture.texture_srv->GetDescriptorIndex(),
+            .ibl_index = m_specular_ibl_texture.GetSRVDescriptorIndex(),
         };
         command->PushConstants(&push_constants, sizeof(PushConstants));
         renderable.Draw(command, true);
@@ -757,8 +706,8 @@ void Renderer::DrawSkybox(Swift::ICommand* command) const
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindRenderTargets(m_render_target, m_depth_stencil);
-    command->BindShader(m_skybox_shader);
+    command->BindRenderTargets(m_render_texture.render_target, m_depth_texture.depth_stencil);
+    command->BindShader(m_skybox_pass.m_skybox_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
     command->DispatchMesh(1, 1, 1);
 }
@@ -769,10 +718,10 @@ void Renderer::DrawShadowPass(Swift::ICommand* command) const
     GPU_ZONE(m_profiler, command, "Shadow Pass");
     command->SetViewport(Swift::Viewport{ .dimensions = { 4096, 4096 } });
     command->SetScissor(Swift::Scissor{ .dimensions = { 4096, 4096 } });
-    command->TransitionResource(m_shadow_texture->GetResource(), Swift::ResourceState::eDepthWrite);
-    command->ClearDepthStencil(m_shadow_depth_stencil, 1.f, 0);
-    command->BindRenderTargets(nullptr, m_shadow_depth_stencil);
-    command->BindShader(m_shadow_shader);
+    command->TransitionResource(m_shadow_pass.m_shadow_texture.texture->GetResource(), Swift::ResourceState::eDepthWrite);
+    command->ClearDepthStencil(m_shadow_pass.m_shadow_texture.depth_stencil, 1.f, 0);
+    command->BindRenderTargets(nullptr, m_shadow_pass.m_shadow_texture.depth_stencil);
+    command->BindShader(m_shadow_pass.m_shadow_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
 
     for (const auto& renderable : m_renderables)
@@ -791,25 +740,25 @@ void Renderer::DrawShadowPass(Swift::ICommand* command) const
 
             uint32_t ibl_index;
         } push_constants{
-            .vertex_buffer = renderable.m_vertex_buffer_srv->GetDescriptorIndex(),
-            .meshlet_buffer = renderable.m_mesh_buffer_srv->GetDescriptorIndex(),
-            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer_srv->GetDescriptorIndex(),
-            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer_srv->GetDescriptorIndex(),
+            .vertex_buffer = renderable.m_vertex_buffer.GetDescriptorIndex(),
+            .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
+            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
+            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
             .material_index = renderable.m_material_index,
             .transform_index = renderable.m_transform_index,
             .meshlet_count = renderable.m_meshlet_count,
             .bounding_offset = renderable.m_bounding_offset,
-            .ibl_index = m_specular_ibl_texture.texture_srv->GetDescriptorIndex(),
+            .ibl_index = m_specular_ibl_texture.GetSRVDescriptorIndex(),
         };
         command->PushConstants(&push_constants, sizeof(PushConstants));
         renderable.Draw(command, false);
     }
-    command->TransitionResource(m_shadow_texture->GetResource(), Swift::ResourceState::eShaderResource);
+    command->TransitionResource(m_shadow_pass.m_shadow_texture.texture->GetResource(), Swift::ResourceState::eShaderResource);
 }
 
 void Renderer::DrawGrassPass(Swift::ICommand* command) const
 {
-    if (m_grass_patches.empty()) return;
+    if (m_grass_pass.m_grass_patches.empty()) return;
     CPU_ZONE("Grass Pass");
     GPU_ZONE(m_profiler, command, "Grass Pass");
     const auto& window = m_engine->GetWindow();
@@ -817,8 +766,8 @@ void Renderer::DrawGrassPass(Swift::ICommand* command) const
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindRenderTargets(m_render_target, m_depth_stencil);
-    command->BindShader(m_grass_shader);
+    command->BindRenderTargets(m_render_texture.render_target, m_render_texture.depth_stencil);
+    command->BindShader(m_grass_pass.m_grass_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
 
     const struct PushConstant
@@ -831,23 +780,23 @@ void Renderer::DrawGrassPass(Swift::ICommand* command) const
         uint32_t grass_count;
         float time;
     } pc{
-        .wind_speed = m_wind_speed,
-        .wind_strength = m_wind_strength,
-        .apply_view_space_thicken = m_apply_view_space_thicken,
-        .lod_distance = m_grass_lod_distance,
-        .grass_count = static_cast<uint32_t>(m_grass_patches.size()),
+        .wind_speed = m_grass_pass.m_wind_speed,
+        .wind_strength = m_grass_pass.m_wind_strength,
+        .apply_view_space_thicken = m_grass_pass.m_apply_view_space_thicken,
+        .lod_distance = m_grass_pass.m_grass_lod_distance,
+        .grass_count = static_cast<uint32_t>(m_grass_pass.m_grass_patches.size()),
         .time = m_engine->GetTime(),
     };
     command->PushConstants(&pc, sizeof(PushConstant));
 
-    const uint32_t num_amp_groups = (m_grass_patches.size() + 31 / 32);
+    const uint32_t num_amp_groups = (m_grass_pass.m_grass_patches.size() + 31 / 32);
     command->DispatchMesh(num_amp_groups, 1, 1);
 }
 
 void Renderer::DrawVolumetricFog(Swift::ICommand* command) const
 {
-    command->TransitionResource(m_render_target_texture->GetResource(), Swift::ResourceState::eShaderResource);
-    command->TransitionResource(m_depth_texture->GetResource(), Swift::ResourceState::eShaderResource);
+    command->TransitionResource(m_render_texture.texture->GetResource(), Swift::ResourceState::eShaderResource);
+    command->TransitionResource(m_depth_texture.texture->GetResource(), Swift::ResourceState::eShaderResource);
     command->TransitionResource(m_fog_texture->GetResource(), Swift::ResourceState::eRenderTarget);
     auto& camera = m_engine->GetCamera();
     const auto& window = m_engine->GetWindow();
@@ -855,7 +804,7 @@ void Renderer::DrawVolumetricFog(Swift::ICommand* command) const
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindShader(m_fog_shader);
+    command->BindShader(m_fog_pass.m_fog_shader);
     command->BindConstantBuffer(m_global_constant_buffer, 1);
     command->BindRenderTargets(m_fog_rtv, nullptr);
     const struct PushConstant
@@ -870,18 +819,18 @@ void Renderer::DrawVolumetricFog(Swift::ICommand* command) const
         uint32_t ray_march_steps;
     } pc{
         .inv_view_proj = glm::inverse(camera.m_proj_matrix * camera.m_view_matrix),
-        .scene_texture_index = m_render_target_srv->GetDescriptorIndex(),
-        .depth_texture_index = m_depth_stencil_srv->GetDescriptorIndex(),
-        .fog_density = m_fog_density,
-        .fog_max_distance = m_fog_max_distance,
-        .fog_color = m_fog_color,
-        .ray_march_steps = m_raymarch_steps,
+        .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
+        .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
+        .fog_density = m_fog_pass.m_fog_density,
+        .fog_max_distance = m_fog_pass.m_fog_max_distance,
+        .fog_color = m_fog_pass.m_fog_color,
+        .ray_march_steps = m_fog_pass.m_raymarch_steps,
     };
     command->PushConstants(&pc, sizeof(PushConstant));
     command->DispatchMesh(1, 1, 1);
 }
 
-void Renderer::InitImgui()
+void Renderer::InitImgui() const
 {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -911,8 +860,9 @@ void Renderer::InitImgui()
         out_cpu_handle->ptr = descriptor.cpu_handle.ptr;
         out_gpu_handle->ptr = descriptor.gpu_handle.ptr;
     };
-    init_info.SrvDescriptorFreeFn =
-        [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle, D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
+    init_info.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo* info,
+                                       const D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle,
+                                       const D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle)
     {
         auto* srv_heap = static_cast<Swift::D3D12::DescriptorHeap*>(info->UserData);
         const uint32_t index = (cpu_handle.ptr - srv_heap->GetCpuBaseHandle().ptr) / srv_heap->GetStride();
