@@ -19,6 +19,13 @@ struct PushConstant
 
 ConstantBuffer<PushConstant> PushConstants : register(b0);
 
+struct TaskPayload
+{
+    uint meshlet_index[32];
+};
+
+groupshared TaskPayload s_Payload;
+
 struct OutVertex
 {
     float4 position : SV_POSITION;
@@ -42,11 +49,7 @@ void ampl_main(uint dtid: SV_DispatchThreadID, uint gtid: SV_GroupThreadID, uint
         var frustum_buffer = DescriptorHandle<StructuredBuffer<Frustum>>(GlobalConstants.frustum_buffer_index);
         var bounding_buffer = DescriptorHandle<StructuredBuffer<CullData>>(GlobalConstants.bounding_buffer_index);
         var cull_data = bounding_buffer[dtid + PushConstants.bounding_offset];
-        visible = IsVisibleAfterFrustumCull(frustum_buffer[0], cull_data, transform, GlobalConstants.cam_pos);
-    }
-    else
-    {
-        visible = false;
+        visible = IsVisibleAfterFrustumAndConeCull(frustum_buffer[0], cull_data, transform, GlobalConstants.cam_pos);
     }
 
     if (visible)

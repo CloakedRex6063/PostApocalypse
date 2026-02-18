@@ -19,6 +19,7 @@ cbuffer GlobalConstantBuffer : register(b1)
     uint dir_light_count;
 
     uint shadow_map_index;
+    uint grass_buffer_index;
 } GlobalConstants;
 
 struct Meshlet

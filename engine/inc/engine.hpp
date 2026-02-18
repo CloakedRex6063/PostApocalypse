@@ -31,6 +31,7 @@ public:
     auto& GetCamera() const { return *m_camera; }
     auto& GetResources() const { return *m_resources; }
     auto& GetScene() const { return *m_scene; }
+    float GetTime() const { return m_time; }
 
 private:
     std::unique_ptr<Window> m_window;
@@ -39,6 +40,7 @@ private:
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<Resources> m_resources;
     std::unique_ptr<Scene> m_scene;
+    float m_time = 0.f;
 };
 
 template<GameConcept Game>
@@ -50,6 +52,7 @@ void Engine::Run()
     {
         const auto current_time = std::chrono::high_resolution_clock::now();
         const auto delta_time = std::chrono::duration<float>(current_time - prev_time).count();
+        m_time += delta_time;
         prev_time = current_time;
         m_input->Update();
         m_window->PollEvents();

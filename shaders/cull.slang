@@ -11,19 +11,12 @@ struct CullData
     uint32_t cone_packed;
 };
 
-struct TaskPayload
-{
-    uint meshlet_index[32];
-};
-
-groupshared TaskPayload s_Payload;
-
 float3 GetScale(float4x4 m)
 {
     return float3(length(m[0].xyz), length(m[1].xyz), length(m[2].xyz));
 }
 
-bool IsVisibleAfterFrustumCull(Frustum frustum, CullData cull_data, float4x4 transform, float3 camera_position)
+bool IsVisibleAfterFrustumAndConeCull(Frustum frustum, CullData cull_data, float4x4 transform, float3 camera_position)
 {
     float4 center = mul(transform, float4(cull_data.center, 1));
     var scale = GetScale(transform);
@@ -55,5 +48,17 @@ bool IsVisibleAfterFrustumCull(Frustum frustum, CullData cull_data, float4x4 tra
     if (dot(view, -axis) > cone_cutoff)
         return false;
 
+    return true;
+}
+
+bool IsVisibleAfterFrustumCull(Frustum frustum, float radius, float3 center, float3 camera_position)
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        if (dot(float4(center, 1.0), frustum.planes[i]) < -radius)
+        {
+            return false;
+        }
+    }
     return true;
 }

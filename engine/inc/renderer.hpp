@@ -22,6 +22,15 @@ struct MeshRenderer
     void Draw(Swift::ICommand* command, bool dispatch_amp) const;
 };
 
+struct GrassPatch
+{
+    glm::vec3 position;
+    float height = 2.f;
+    glm::vec2 padding;
+    float width = 0.2f;
+    float radius = 0.5;
+};
+
 struct DirectionalLight
 {
     glm::vec3 direction;
@@ -107,10 +116,12 @@ private:
     void InitBuffers();
     void InitShadowPass();
     void InitSkyboxShader();
+    void InitGrassPass();
     void InitPBRShader();
     void DrawGeometry(Swift::ICommand* command) const;
     void DrawSkybox(Swift::ICommand* command) const;
     void DrawShadowPass(Swift::ICommand* command) const;
+    void DrawGrassPass(Swift::ICommand* command) const;
     void InitImgui();
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
@@ -136,6 +147,7 @@ private:
         uint32_t dir_light_count;
 
         uint32_t shadow_texture_index;
+        uint32_t grass_buffer_index;
     };
 
     struct TextureView
@@ -150,20 +162,13 @@ private:
 
     bool m_rebuild_lights = false;
 
-    TextureView m_skybox_texture;
     TextureView m_dummy_white_texture;
     TextureView m_dummy_black_texture;
     TextureView m_dummy_normal_texture;
     TextureView m_specular_ibl_texture;
 
-    Swift::IShader* m_shadow_shader = nullptr;
-    Swift::ITexture* m_shadow_texture = nullptr;
-    Swift::ITextureSRV* m_shadow_texture_srv = nullptr;
-    Swift::IDepthStencil* m_shadow_depth_stencil = nullptr;
-
     Swift::ITexture* m_depth_texture = nullptr;
     Swift::IDepthStencil* m_depth_stencil = nullptr;
-
     Swift::IBuffer* m_global_constant_buffer = nullptr;
     Swift::IBuffer* m_transform_buffer = nullptr;
     Swift::IBufferSRV* m_transform_buffer_srv = nullptr;
@@ -179,6 +184,22 @@ private:
     Swift::IBufferSRV* m_dir_light_buffer_srv = nullptr;
 
     Swift::IShader* m_skybox_shader = nullptr;
+    TextureView m_skybox_texture;
+
+    float m_wind_speed = 1.f;
+    float m_wind_strength = 0.4f;
+    float m_grass_lod_distance = 50.f;
+    bool m_apply_view_space_thicken = false;
+    Swift::IShader* m_grass_shader = nullptr;
+    Swift::IBuffer* m_grass_buffer = nullptr;
+    Swift::IBufferSRV* m_grass_buffer_srv = nullptr;
+    std::vector<GrassPatch> m_grass_patches;
+
+    Swift::IShader* m_shadow_shader = nullptr;
+    Swift::ITexture* m_shadow_texture = nullptr;
+    Swift::ITextureSRV* m_shadow_texture_srv = nullptr;
+    Swift::IDepthStencil* m_shadow_depth_stencil = nullptr;
+
     Swift::IShader* m_pbr_shader = nullptr;
     std::vector<Swift::SamplerDescriptor> m_sampler_descriptors;
     std::vector<PointLight> m_point_lights;

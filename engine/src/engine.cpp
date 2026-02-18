@@ -19,7 +19,7 @@ Engine::Engine()
     };
     dir_light.SetDirectionEuler(glm::vec3(-45.0f, 135.0f, 0.0f));
     m_renderer->AddDirectionalLight(dir_light);
-    m_resources->LoadModel("assets/cathedral/cathedral.gltf", glm::vec3(1.f));
+    m_resources->LoadModel("assets/helmet/helmet.gltf", glm::vec3(1.f));
     m_renderer->GenerateStaticShadowMap();
 }
 

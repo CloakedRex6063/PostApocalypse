@@ -27,6 +27,7 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
     InitBuffers();
     InitPBRShader();
     InitShadowPass();
+    InitGrassPass();
     InitSkyboxShader();
 
     m_engine->GetWindow().AddResizeCallback(
@@ -83,6 +84,7 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
         .point_light_count = static_cast<uint32_t>(m_point_lights.size()),
         .dir_light_count = static_cast<uint32_t>(m_dir_lights.size()),
         .shadow_texture_index = m_shadow_texture_srv->GetDescriptorIndex(),
+        .grass_buffer_index = m_grass_buffer_srv->GetDescriptorIndex(),
     };
     m_global_constant_buffer->Write(&info, 0, sizeof(GlobalConstantInfo));
 }
@@ -113,6 +115,7 @@ void Renderer::Update()
     command->BindRenderTargets(render_target, m_depth_stencil);
 
     DrawGeometry(command);
+    DrawGrassPass(command);
     DrawSkybox(command);
 
     ImGui::Begin("Lights");
@@ -140,6 +143,41 @@ void Renderer::Update()
     }
 
     ImGui::DragFloat("Move Speed", &camera.m_move_speed);
+
+    ImGui::DragFloat("Wind Speed", &m_wind_speed);
+    ImGui::DragFloat("Wind Strength", &m_wind_strength);
+    ImGui::DragFloat("Grass LOD Distance", &m_grass_lod_distance);
+    ImGui::Checkbox("Apply View Space Thickening", &m_apply_view_space_thicken);
+
+    if (ImGui::Button("Add Grass Patch"))
+    {
+        m_grass_patches.emplace_back(GrassPatch{});
+        m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
+    }
+
+    bool update_patches = false;
+    for (uint32_t i = 0; i < m_grass_patches.size(); ++i)
+    {
+        ImGui::PushID(("Grass " + std::to_string(i)).c_str());
+        auto& patch = m_grass_patches[i];
+        if (ImGui::DragFloat3("Position", glm::value_ptr(patch.position)))
+        {
+            update_patches = true;
+        }
+        if (ImGui::DragFloat("Height", &patch.height))
+        {
+            update_patches = true;
+        }
+        if (ImGui::DragFloat("Radius", &patch.radius))
+        {
+            update_patches = true;
+        }
+        ImGui::PopID();
+    }
+    if (update_patches)
+    {
+        m_grass_buffer->Write(m_grass_patches.data(), 0, sizeof(GrassPatch) * m_grass_patches.size());
+    }
 
     ImGui::End();
 
@@ -345,6 +383,34 @@ void Renderer::InitSkyboxShader()
                           .SetStaticSamplers(samplers)
                           .SetName("Skybox Shader")
                           .Build();
+}
+
+void Renderer::InitGrassPass()
+{
+    m_grass_buffer = Swift::BufferBuilder(m_context, 10'000'000 * sizeof(GrassPatch)).SetName("Grass Patch Buffer").Build();
+    m_grass_buffer_srv = m_context->CreateShaderResource(m_grass_buffer,
+                                                         Swift::BufferSRVCreateInfo{
+                                                             .num_elements = 10'000'000,
+                                                             .element_size = sizeof(GrassPatch),
+                                                         });
+
+    std::vector<Swift::Descriptor> descriptors{};
+    const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
+    descriptors.emplace_back(descriptor);
+    m_grass_shader = Swift::GraphicsShaderBuilder(m_context)
+                         .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                         .SetDSVFormat(Swift::Format::eD32F)
+                         .SetAmplificationShader(grass_ampl_main_code)
+                         .SetMeshShader(grass_mesh_main_code)
+                         .SetPixelShader(grass_pixel_main_code)
+                         .SetCullMode(Swift::CullMode::eNone)
+                         .SetDepthTestEnable(true)
+                         .SetDepthWriteEnable(true)
+                         .SetDepthTest(Swift::DepthTest::eLess)
+                         .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                         .SetDescriptors(descriptors)
+                         .SetName("Grass Shader")
+                         .Build();
 }
 
 void Renderer::InitPBRShader()
@@ -627,6 +693,42 @@ void Renderer::DrawShadowPass(Swift::ICommand* command) const
         renderable.Draw(command, false);
     }
     command->TransitionResource(m_shadow_texture->GetResource(), Swift::ResourceState::eShaderResource);
+}
+
+void Renderer::DrawGrassPass(Swift::ICommand* command) const
+{
+    if (m_grass_patches.empty()) return;
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+    auto* render_target = m_context->GetCurrentRenderTarget();
+    command->BindRenderTargets(render_target, m_depth_stencil);
+    command->BindShader(m_grass_shader);
+    command->BindConstantBuffer(m_global_constant_buffer, 1);
+
+    const struct PushConstant
+    {
+        float wind_speed;
+        float wind_strength;
+        uint32_t apply_view_space_thicken;
+        float lod_distance;
+
+        uint32_t grass_count;
+        float time;
+    } pc{
+        .wind_speed = m_wind_speed,
+        .wind_strength = m_wind_strength,
+        .apply_view_space_thicken = m_apply_view_space_thicken,
+        .lod_distance = m_grass_lod_distance,
+        .grass_count = static_cast<uint32_t>(m_grass_patches.size()),
+        .time = m_engine->GetTime(),
+    };
+    command->PushConstants(&pc, sizeof(PushConstant));
+
+    const uint32_t num_amp_groups = (m_grass_patches.size() + 31 / 32);
+    command->DispatchMesh(num_amp_groups, 1, 1);
 }
 
 void Renderer::InitImgui()
