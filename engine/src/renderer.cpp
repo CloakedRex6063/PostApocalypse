@@ -155,6 +155,7 @@ void Renderer::UpdateFogDialog()
         ImGui::DragFloat("Fog Max Distance", &m_fog_pass.max_distance);
         ImGui::DragFloat3("Fog Color", glm::value_ptr(m_fog_pass.color));
         ImGui::DragInt("Ray March Steps", reinterpret_cast<int*>(&m_fog_pass.raymarch_steps));
+        ImGui::DragFloat("Scattering Factor", &m_fog_pass.scattering_factor);
     }
 }
 void Renderer::UpdateLightsDialog(Camera& camera)

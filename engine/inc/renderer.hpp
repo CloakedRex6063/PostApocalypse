@@ -396,7 +396,7 @@ private:
 
     struct FogPass
     {
-        float density = 0.15f;
+        float density = 0.04f;
         float max_distance = 200.f;
         float scattering_factor = 0.8f;
         glm::vec3 color = glm::vec3(0.6, 0.65, 0.7);
