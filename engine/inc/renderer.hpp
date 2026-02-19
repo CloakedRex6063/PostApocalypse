@@ -399,7 +399,10 @@ private:
         float density = 0.04f;
         float max_distance = 200.f;
         float scattering_factor = 0.8f;
-        glm::vec3 color = glm::vec3(0.6, 0.65, 0.7);
+        glm::vec3 scattering_color = glm::vec3(0.6, 0.65, 0.7);
+        glm::vec3 absorption_color = glm::vec3(0.05, 0.2, 0.8);
+        float scattering_coefficient = 0.6f;
+        float absorption_coefficient = 0.4f;
         uint32_t raymarch_steps = 64;
         Swift::IShader* shader = nullptr;
     } m_fog_pass;

@@ -153,9 +153,12 @@ void Renderer::UpdateFogDialog()
     {
         ImGui::DragFloat("Fog Density", &m_fog_pass.density);
         ImGui::DragFloat("Fog Max Distance", &m_fog_pass.max_distance);
-        ImGui::DragFloat3("Fog Color", glm::value_ptr(m_fog_pass.color));
+        ImGui::DragFloat3("Scattering Fog Color", glm::value_ptr(m_fog_pass.scattering_color));
+        ImGui::DragFloat3("Absorption Fog Color", glm::value_ptr(m_fog_pass.absorption_color));
         ImGui::DragInt("Ray March Steps", reinterpret_cast<int*>(&m_fog_pass.raymarch_steps));
         ImGui::DragFloat("Scattering Factor", &m_fog_pass.scattering_factor);
+        ImGui::DragFloat("Scattering Coefficient", &m_fog_pass.scattering_coefficient);
+        ImGui::DragFloat("Absorption Coefficient", &m_fog_pass.absorption_coefficient);
     }
 }
 void Renderer::UpdateLightsDialog(Camera& camera)
@@ -836,16 +839,24 @@ void Renderer::DrawVolumetricFog(Swift::ICommand* command)
         uint32_t ray_march_steps;
         uint32_t shadow_texture_index;
         float scattering_factor;
+
+        float scattering_coefficient;
+        float absorption_coefficient;
+
+        glm::vec3 absorption_color;
     } pc{
         .inv_view_proj = glm::inverse(camera.m_proj_matrix * camera.m_view_matrix),
         .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
         .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
         .fog_density = m_fog_pass.density,
         .fog_max_distance = m_fog_pass.max_distance,
-        .fog_color = m_fog_pass.color,
+        .fog_color = m_fog_pass.scattering_color,
         .ray_march_steps = m_fog_pass.raymarch_steps,
         .shadow_texture_index = m_shadow_pass.texture.GetSRVDescriptorIndex(),
         .scattering_factor = m_fog_pass.scattering_factor,
+        .scattering_coefficient = m_fog_pass.scattering_coefficient,
+        .absorption_coefficient = m_fog_pass.absorption_coefficient,
+        .absorption_color = m_fog_pass.absorption_color,
     };
     command->PushConstants(&pc, sizeof(PushConstant));
     command->DispatchMesh(1, 1, 1);

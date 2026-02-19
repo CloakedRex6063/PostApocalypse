@@ -28,6 +28,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 struct PushConstant
 {
     float4x4 inv_view_proj;
+
     uint scene_texture_index;
     uint depth_texture_index;
     float fog_density;
@@ -38,6 +39,10 @@ struct PushConstant
 
     uint shadow_map_index;
     float scattering_factor;
+    float scattering_coefficient;
+    float absorption_coefficient;
+
+    float3 absorption_color;
 }
 ConstantBuffer<PushConstant> PushConstants : register(b0);
 
@@ -111,7 +116,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     float3 ray_step = ray_dir * step_size;
     float3 current_pos = GlobalConstants.cam_pos;
 
-    float transmittance = 1.0;
+    float3 transmittance = float3(1, 1, 1);
     float3 scattering = float3(0, 0, 0);
     var shadow_texture = DescriptorHandle<Texture2D<float>>(PushConstants.shadow_map_index);
     var sun = DescriptorHandle<StructuredBuffer<DirectionalLight>>(GlobalConstants.dir_light_buffer_index)[0];
@@ -126,8 +131,9 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     {
         current_pos += ray_step;
         float density = GetFogDensity(current_pos);
-        float sigma_s = density;
-        float sigma_t = density;
+        float sigma_s = density * PushConstants.scattering_coefficient;
+        float3 sigma_a = density * PushConstants.absorption_coefficient * PushConstants.absorption_color;
+        float3 sigma_t = sigma_s + sigma_a;
         float light_vis = GetLightVisibility(current_pos, shadow_texture, shadow_samp);
 
         float3 sun_scatter = sigma_s * light_vis * sun_color * phase;
@@ -137,7 +143,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
 
         transmittance *= exp(-sigma_t * step_size);
 
-        if (transmittance < 0.01)
+        if (max(transmittance.x, max(transmittance.y, transmittance.z)) < 0.01)
             break;
     }
 
