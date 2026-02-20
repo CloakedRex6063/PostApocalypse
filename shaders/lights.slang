@@ -115,8 +115,7 @@ float3 CalculateIrradiance(float3 n)
                float3(0.0));
 }
 
-float3
-CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float roughness, TextureCube ibl_texture, SamplerState samp)
+float3 CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float roughness, SamplerCube ibl_texture)
 {
     float n_dot_v = max(dot(n, v), 0.0);
     float3 f0 = lerp(float3(0.04), albedo, metallic);
@@ -128,7 +127,7 @@ CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float roughness,
     float3 r = reflect(-v, n);
     float lod = roughness * max_mip_level;
 
-    float3 indirect_specular = ibl_texture.SampleLevel(samp, r, lod).rgb;
+    float3 indirect_specular = ibl_texture.SampleLevel(r, lod).rgb;
     float horizon = min(1.0 + dot(r, n), 1.0);
     indirect_specular *= horizon * horizon;
     float2 brdf = EnvBRDFApprox(n_dot_v, roughness);
@@ -139,16 +138,9 @@ CalculateIBL(float3 n, float3 v, float3 albedo, float metallic, float roughness,
     return albedo * indirect_diffuse + indirect_specular * specular;
 }
 
-float CalculateShadow(Texture2D<float> shadow_texture,
-                      SamplerComparisonState samp,
-                      float4 light_space_pos,
-                      float3 normal,
-                      float3 light_dir)
+float CalculateShadow(Sampler2DShadow shadow_texture, uint2 size, float4 light_space_pos, float3 normal, float3 light_dir)
 {
-    uint width;
-    uint height;
-    shadow_texture.GetDimensions(width, height);
-    float2 texel_size = float2(1.0 / width, 1.0 / height);
+    float2 texel_size = float2(1.0 / size.x, 1.0 / size.y);
     float3 proj_coords = light_space_pos.xyz / light_space_pos.w;
     proj_coords.xy = proj_coords.xy * 0.5 + 0.5;
     proj_coords.y = 1.0 - proj_coords.y;
@@ -163,7 +155,7 @@ float CalculateShadow(Texture2D<float> shadow_texture,
     {
         for (int y = -1; y <= 1; y++)
         {
-            shadow += shadow_texture.SampleCmpLevelZero(samp, proj_coords.xy + float2(x, y) * texel_size, depth);
+            shadow += shadow_texture.SampleCmpLevelZero(proj_coords.xy + float2(x, y) * texel_size, depth);
         }
     }
 

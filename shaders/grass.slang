@@ -12,6 +12,7 @@ struct GrassPatch
 
 struct PushConstant
 {
+    uint constant_buffer_index;
     float wind_speed;
     float wind_strength;
     uint apply_view_space_thicken;

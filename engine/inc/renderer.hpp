@@ -95,12 +95,6 @@ public:
         return *this;
     }
 
-    TextureViewBuilder& SetResource(const std::shared_ptr<Swift::IResource>& resource)
-    {
-        m_texture_builder.SetResource(resource);
-        return *this;
-    }
-
     TextureView Build() const
     {
         const auto build_info = m_texture_builder.GetBuildInfo();
@@ -175,12 +169,6 @@ public:
     BufferViewBuilder& SetBufferType(const Swift::BufferType buffer_type)
     {
         m_builder.SetBufferType(buffer_type);
-        return *this;
-    }
-
-    BufferViewBuilder& SetResource(const std::shared_ptr<Swift::IResource>& resource)
-    {
-        m_builder.SetResource(resource);
         return *this;
     }
 
@@ -267,7 +255,7 @@ public:
     void UpdateGrassDialog();
     void UpdateFogDialog();
     void UpdateLightsDialog(Camera& camera);
-    void RenderImGUI(Swift::ICommand* command, const Swift::ITexture* render_target_texture) const;
+    void RenderImGUI(Swift::ICommand* command, Swift::ITexture* render_target_texture) const;
     void ClearTextures(Swift::ICommand* command) const;
     static void ImGUINewFrame();
 
@@ -348,9 +336,21 @@ private:
         glm::mat4 view;
         glm::mat4 proj;
         glm::mat4 sun_view_proj;
+        glm::mat4 inv_view_proj;
 
         glm::vec3 cam_pos;
         uint32_t cubemap_index;
+
+        float fog_density;
+        float fog_max_distance;
+        float scattering_coefficient;
+        float absorption_coefficient;
+
+        glm::vec3 fog_color;
+        uint32_t ray_march_steps;
+
+        glm::vec3 absorption_color;
+        float scattering_factor;
 
         uint32_t transform_buffer_index;
         uint32_t material_buffer_index;
@@ -368,7 +368,6 @@ private:
 
     Engine* m_engine;
     Swift::IContext* m_context = nullptr;
-    Swift::IHeap* m_texture_heap = nullptr;
 
     bool m_rebuild_lights = false;
 
@@ -380,13 +379,16 @@ private:
     TextureView m_render_texture;
     TextureView m_depth_texture;
 
-    Swift::IBuffer* m_global_constant_buffer = nullptr;
+    BufferView m_global_constant_buffer;
     BufferView m_transform_buffer;
     BufferView m_material_buffer;
     BufferView m_cull_data_buffer;
     BufferView m_frustum_buffer;
     BufferView m_point_light_buffer;
     BufferView m_dir_light_buffer;
+    Swift::ISampler* m_bilinear_sampler;
+    Swift::ISampler* m_shadow_comparison_sampler;
+    Swift::ISampler* m_nearest_sampler;
 
     struct SkyboxPass
     {
@@ -436,7 +438,6 @@ private:
     } m_shadow_pass;
 
     Swift::IShader* m_pbr_shader = nullptr;
-    std::vector<Swift::SamplerDescriptor> m_sampler_descriptors;
     std::vector<PointLight> m_point_lights;
     std::vector<DirectionalLight> m_dir_lights;
     std::vector<glm::vec3> m_dir_light_eulers;

@@ -59,6 +59,4 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 }
 
 [shader("pixel")]
-void pixel_main()
-{
-}
+void pixel_main() {}

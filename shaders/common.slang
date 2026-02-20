@@ -1,12 +1,24 @@
-cbuffer GlobalConstantBuffer : register(b1)
+struct GlobalConstant
 {
     float4x4 view_proj;
     float4x4 view;
     float4x4 proj;
     float4x4 sun_view_proj;
+    float4x4 inv_view_proj;
 
     float3 cam_pos;
     uint cubemap_index;
+
+    float fog_density;
+    float fog_max_distance;
+    float scattering_coefficient;
+    float absorption_coefficient;
+
+    float3 fog_color;
+    uint ray_march_steps;
+
+    float3 absorption_color;
+    float scattering_factor;
 
     uint transform_buffer_index;
     uint material_buffer_index;
@@ -20,7 +32,8 @@ cbuffer GlobalConstantBuffer : register(b1)
 
     uint shadow_map_index;
     uint grass_buffer_index;
-} GlobalConstants;
+};
+ConstantBuffer<GlobalConstant> GlobalConstants : register(b1);
 
 struct Meshlet
 {

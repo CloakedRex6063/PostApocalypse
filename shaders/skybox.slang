@@ -58,6 +58,13 @@ static const float3 skybox_vertices[36] = { // Back face
 const static uint MaxVertices = 36;
 const static uint MaxPrimitives = 12;
 
+struct PushConstant
+{
+    uint sampler_index;
+};
+
+ConstantBuffer<PushConstant> PushConstants : register(b0);
+
 SamplerState samp : register(s0);
 
 [outputtopology("triangle")]
@@ -95,7 +102,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 [shader("pixel")]
 float4 pixel_main(SkyboxVertex input) : SV_Target
 {
-    var skybox_texture = DescriptorHandle<TextureCube>(GlobalConstants.cubemap_index);
-    float3 env_color = skybox_texture.Sample(samp, input.tex_coords).rgb;
+    var skybox_texture = DescriptorHandle<SamplerCube>(uint2(GlobalConstants.cubemap_index, PushConstants.sampler_index));
+    float3 env_color = skybox_texture.Sample(input.tex_coords).rgb;
     return float4(env_color, 1.0);
 }

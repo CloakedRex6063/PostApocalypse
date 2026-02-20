@@ -4,16 +4,18 @@
 
 struct PushConstant
 {
+    uint shadow_sampler_index;
+    uint bilinear_sampler_index;
     uint vertex_buffer_index;
+
     uint mesh_buffer_index;
     uint mesh_vertex_buffer_index;
     uint mesh_triangle_buffer_index;
-
     int material_index;
+
     uint transform_index;
     uint meshlet_count;
     uint bounding_offset;
-
     uint ibl_index;
 };
 
@@ -76,6 +78,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
     var mesh_vertex_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_vertex_buffer_index);
     var mesh_triangle_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_triangle_buffer_index);
     var transform_buffer = DescriptorHandle<StructuredBuffer<float4x4>>(GlobalConstants.transform_buffer_index);
+    var transform = transform_buffer[PushConstants.transform_index];
 
     uint meshlet_index = payload.meshlet_index[gid];
     Meshlet meshlet = meshlet_buffer[meshlet_index];
@@ -92,7 +95,6 @@ void mesh_main(uint gtid: SV_GroupThreadID,
 
     if (gtid < meshlet.vertex_count)
     {
-        var transform = transform_buffer[PushConstants.transform_index];
         uint vertex_index = meshlet.vertex_offset + gtid;
         vertex_index = mesh_vertex_buffer[vertex_index];
         Vertex vertex = vertex_buffer[vertex_index];
@@ -100,14 +102,11 @@ void mesh_main(uint gtid: SV_GroupThreadID,
         verts[gtid].position = mul(GlobalConstants.view_proj, world_pos);
         verts[gtid].world_pos = world_pos.xyz;
         verts[gtid].light_space_pos = mul(GlobalConstants.sun_view_proj, world_pos);
-        verts[gtid].normal = mul(transform, float4(vertex.normal, 1.0)).rgb;
+        verts[gtid].normal = mul(transform, float4(vertex.normal, 0.0)).rgb;
         verts[gtid].uv = float2(vertex.uv_x, vertex.uv_y);
         verts[gtid].tangent = mul(transform, vertex.tangent);
     }
 }
-
-SamplerState samp : register(s0);
-SamplerComparisonState shadow_samp : register(s1);
 
 [shader("pixel")]
 float4 pixel_main(OutVertex input) : SV_TARGET
@@ -116,19 +115,20 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     Material material = material_buffer[PushConstants.material_index];
 
     float3 albedo = material.albedo.rgb;
-    var albedo_texture = DescriptorHandle<Texture2D>(uint(material.albedo_index));
-    albedo *= albedo_texture.Sample(samp, input.uv).rgb;
+    var albedo_texture = DescriptorHandle<Sampler2D>(uint2(material.albedo_index, PushConstants.bilinear_sampler_index));
+    albedo *= albedo_texture.Sample(input.uv).rgb;
 
     float metallic = material.metallic;
     float roughness = material.roughness;
-    var metal_rough_texture = DescriptorHandle<Texture2D<float4>>(uint(material.metal_rough_index));
-    float4 mr = metal_rough_texture.Sample(samp, input.uv);
+    var metal_rough_texture =
+        DescriptorHandle<Sampler2D>(uint2(material.metal_rough_index, PushConstants.bilinear_sampler_index));
+    float4 mr = metal_rough_texture.Sample(input.uv);
     roughness *= mr.g;
     metallic *= mr.b;
 
     float3 emissive = material.emissive;
-    var emissive_texture = DescriptorHandle<Texture2D>(uint(material.emissive_index));
-    emissive *= emissive_texture.Sample(samp, input.uv).rgb;
+    var emissive_texture = DescriptorHandle<Sampler2D>(uint2(material.emissive_index, PushConstants.bilinear_sampler_index));
+    emissive *= emissive_texture.Sample(input.uv).rgb;
 
     float3 world_pos = input.world_pos;
     float3 v = normalize(GlobalConstants.cam_pos - world_pos);
@@ -136,15 +136,15 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     f0 = lerp(f0, albedo, metallic);
 
     float3 n = input.normal;
-    var normal_texture = DescriptorHandle<Texture2D>(uint(material.normal_index));
-    float3 tangent_normal = normal_texture.Sample(samp, input.uv).rgb * 2.0 - 1.0;
+    var normal_texture = DescriptorHandle<Sampler2D>(uint2(material.normal_index, PushConstants.bilinear_sampler_index));
+    float3 tangent_normal = normal_texture.Sample(input.uv).rgb * 2.0 - 1.0;
     float3 bitangent = cross(input.normal, input.tangent.xyz) * input.tangent.w;
     float3x3 TBN = float3x3(input.tangent.xyz, bitangent, input.normal);
     n = normalize(mul(tangent_normal, TBN));
 
     float occlusion = 1.0;
-    var occlusion_texture = DescriptorHandle<Texture2D>(uint(material.occlusion_index));
-    occlusion *= occlusion_texture.Sample(samp, input.uv).r;
+    var occlusion_texture = DescriptorHandle<Sampler2D>(uint2(material.occlusion_index, PushConstants.bilinear_sampler_index));
+    occlusion *= occlusion_texture.Sample(input.uv).r;
 
     float3 lo = float3(0.0, 0.0, 0.0);
     var point_light_buffer = DescriptorHandle<StructuredBuffer<PointLight>>(GlobalConstants.point_light_buffer_index);
@@ -168,10 +168,17 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     };
 
     var shadow_texture = DescriptorHandle<Texture2D<float>>(GlobalConstants.shadow_map_index);
-    float shadow = CalculateShadow(shadow_texture, shadow_samp, input.light_space_pos, n, dir_light_buffer[0].direction);
+    uint width;
+    uint height;
+    shadow_texture.GetDimensions(width, height);
+    var shadow_sampler =
+        DescriptorHandle<Sampler2DShadow>(uint2(GlobalConstants.shadow_map_index, PushConstants.shadow_sampler_index));
+    float shadow =
+        CalculateShadow(shadow_sampler, uint2(width, height), input.light_space_pos, n, dir_light_buffer[0].direction);
 
-    var specular_ibl_texture = DescriptorHandle<TextureCube>(PushConstants.ibl_index);
-    float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, specular_ibl_texture, samp);
+    var specular_ibl_texture =
+        DescriptorHandle<SamplerCube>(uint2(PushConstants.ibl_index, PushConstants.bilinear_sampler_index));
+    float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, specular_ibl_texture);
     float3 color = ibl + shadow * lo + emissive;
     color = color / (color + float3(1.0, 1.0, 1.0));
     return float4(color, 1.0);
