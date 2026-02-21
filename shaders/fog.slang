@@ -97,6 +97,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     var sun = DescriptorHandle<StructuredBuffer<DirectionalLight>>(GlobalConstants.dir_light_buffer_index)[0];
     float3 sun_color = sun.color;
     float3 sun_dir = -normalize(sun.direction);
+    float sun_intensity = sun.intensity;
 
     float g = GlobalConstants.scattering_factor;
     float cosTheta = dot(ray_dir, sun_dir);
@@ -118,7 +119,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
         float3 sigma_t = sigma_s + sigma_a;
         float light_vis = GetLightVisibility(GlobalConstants.sun_view_proj, current_pos, shadow_sampler);
 
-        float3 sun_scatter = sigma_s * light_vis * sun_color * phase;
+        float3 sun_scatter = sigma_s * light_vis * sun_color * sun_intensity * phase;
         float3 ambient_scatter = sigma_s * GlobalConstants.fog_color;
         float3 total_light = sun_scatter + ambient_scatter;
         scattering += transmittance * total_light * step_size;

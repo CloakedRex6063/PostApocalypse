@@ -26,6 +26,7 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
     InitImgui();
 
     InitBuffers();
+    InitDepthPrepass();
     InitGeometryShader();
     InitShadowPass();
     InitGrassPass();
@@ -300,6 +301,7 @@ void Renderer::Update()
 
     ClearTextures(command);
 
+    DrawDepthPrePass(command);
     DrawGeometry(command);
     DrawGrassPass(command);
     DrawSkybox(command);
@@ -443,6 +445,20 @@ void Renderer::InitBuffers()
     m_frustum_buffer = BufferViewBuilder(m_context, sizeof(Frustum)).SetNumElements(1).Build();
 }
 
+void Renderer::InitDepthPrepass()
+{
+    m_depth_prepass.shader = Swift::GraphicsShaderBuilder(m_context)
+                                 .SetDSVFormat(Swift::Format::eD32F)
+                                 .SetMeshShader(depth_prepass_mesh_main_code)
+                                 .SetPixelShader(depth_prepass_pixel_main_code)
+                                 .SetDepthTestEnable(true)
+                                 .SetDepthWriteEnable(true)
+                                 .SetDepthTest(Swift::DepthTest::eLess)
+                                 .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                 .SetName("Depth Prepass Shader")
+                                 .Build();
+}
+
 void Renderer::InitShadowPass()
 {
     m_shadow_pass.texture = TextureViewBuilder(m_context, { 4096, 4096 })
@@ -526,7 +542,7 @@ void Renderer::InitGeometryShader()
                        .SetPixelShader(model_pixel_main_code)
                        .SetDepthTestEnable(true)
                        .SetDepthWriteEnable(true)
-                       .SetDepthTest(Swift::DepthTest::eLess)
+                       .SetDepthTest(Swift::DepthTest::eEqual)
                        .SetPolygonMode(Swift::PolygonMode::eTriangle)
                        .SetName("PBR Shader")
                        .Build();
@@ -696,6 +712,44 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
     auto size = static_cast<uint32_t>(renderers.size());
     m_renderables.insert_range(m_renderables.end(), renderers);
     return { offset, size };
+}
+
+void Renderer::DrawDepthPrePass(Swift::ICommand* command) const
+{
+    CPU_ZONE("Depth Prepass");
+    GPU_ZONE(m_profiler, command, "Depth Prepass");
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+    command->BindRenderTargets(nullptr, m_depth_texture.depth_stencil);
+    command->BindShader(m_depth_prepass.shader);
+
+    for (const auto& renderable : m_renderables)
+    {
+        const struct PushConstants
+        {
+            uint32_t vertex_buffer;
+            uint32_t meshlet_buffer;
+            uint32_t mesh_vertex_buffer;
+            uint32_t mesh_triangle_buffer;
+
+            uint32_t transform_index;
+            uint32_t meshlet_count;
+            uint32_t bounding_offset;
+        } push_constants{
+            .vertex_buffer = renderable.m_vertex_buffer.GetDescriptorIndex(),
+            .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
+            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
+            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
+            .transform_index = renderable.m_transform_index,
+            .meshlet_count = renderable.m_meshlet_count,
+            .bounding_offset = renderable.m_bounding_offset,
+        };
+        command->PushConstants(&push_constants, sizeof(PushConstants));
+        renderable.Draw(command, false);
+    }
 }
 
 void Renderer::DrawGeometry(Swift::ICommand* command) const

@@ -6,7 +6,7 @@ PostApocalyptic::PostApocalyptic(Engine *engine) : m_engine(engine)
     auto* ibl_texture = m_engine->GetResources().LoadTexture("assets/skybox/sky_specular.dds");
     m_engine->GetRenderer().SetSkybox(skybox_texture, ibl_texture);
     DirectionalLight dir_light{
-        .intensity = 1.f,
+        .intensity = 3.f,
         .color = glm::vec3(1.0f, 0.75f, 0.3f),
         .cast_shadows = true,
     };

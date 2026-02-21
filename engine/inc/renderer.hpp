@@ -314,6 +314,7 @@ public:
 private:
     void InitContext();
     void InitBuffers();
+    void InitDepthPrepass();
     void InitShadowPass();
     void InitSkyboxShader();
     void InitGrassPass();
@@ -321,6 +322,7 @@ private:
     void InitGeometryShader();
     void InitBloomPass();
     void InitTonemapPass();
+    void DrawDepthPrePass(Swift::ICommand* command) const;
     void DrawGeometry(Swift::ICommand* command) const;
     void DrawSkybox(Swift::ICommand* command) const;
     void DrawShadowPass(Swift::ICommand* command) const;
@@ -394,6 +396,11 @@ private:
     Swift::ISampler* m_shadow_comparison_sampler;
     Swift::ISampler* m_nearest_sampler;
 
+    struct DepthPrePass
+    {
+        Swift::IShader* shader = nullptr;
+    } m_depth_prepass;
+
     struct SkyboxPass
     {
         Swift::IShader* shader = nullptr;
@@ -410,7 +417,7 @@ private:
     {
         float density = 0.02f;
         float max_distance = 400.f;
-        float scattering_factor = 0.3f;
+        float scattering_factor = 0.6f;
         glm::vec3 scattering_color = glm::vec3(0.6, 0.65, 0.7);
         glm::vec3 absorption_color = glm::vec3(0.05, 0.2, 0.8);
         float scattering_coefficient = 0.3f;
