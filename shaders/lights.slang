@@ -159,6 +159,5 @@ float CalculateShadow(Sampler2DShadow shadow_texture, uint2 size, float4 light_s
         }
     }
 
-    float min_shadow = 0.2;
-    return lerp(min_shadow, 1.0, shadow / 9.0);
+    return lerp(0, 1.0, shadow / 9.0);
 }

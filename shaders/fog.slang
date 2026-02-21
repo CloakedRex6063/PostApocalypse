@@ -55,9 +55,8 @@ float PhaseHG(float cosTheta, float g)
     return (1.0 - g2) / pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5) * (1.0 / (4.0 * 3.14159265));
 }
 
-float GetLightVisibility(float4x4 sun_view_proj, float3 world_pos, Sampler2DShadow shadow_texture, uint2 size)
+float GetLightVisibility(float4x4 sun_view_proj, float3 world_pos, Sampler2DShadow shadow_texture)
 {
-    float2 texel_size = float2(1.0 / size.x, 1.0 / size.y);
     float4 light_space_pos = mul(sun_view_proj, float4(world_pos, 1.0));
     float3 proj_coords = light_space_pos.xyz / light_space_pos.w;
     proj_coords.xy = proj_coords.xy * 0.5 + 0.5;
@@ -68,16 +67,9 @@ float GetLightVisibility(float4x4 sun_view_proj, float3 world_pos, Sampler2DShad
 
     float depth = proj_coords.z;
 
-    float shadow = 0.0;
-    for (int x = -1; x <= 1; x++)
-    {
-        for (int y = -1; y <= 1; y++)
-        {
-            shadow += shadow_texture.SampleCmpLevelZero(proj_coords.xy + float2(x, y) * texel_size, depth);
-        }
-    }
+    float shadow = shadow_texture.SampleCmpLevelZero(proj_coords.xy, depth);
 
-    return shadow / 9.0;
+    return shadow;
 }
 
 [shader("pixel")]
@@ -124,7 +116,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
         float sigma_s = density * GlobalConstants.scattering_coefficient;
         float3 sigma_a = density * GlobalConstants.absorption_coefficient * GlobalConstants.absorption_color;
         float3 sigma_t = sigma_s + sigma_a;
-        float light_vis = GetLightVisibility(GlobalConstants.sun_view_proj, current_pos, shadow_sampler, uint2(width, height));
+        float light_vis = GetLightVisibility(GlobalConstants.sun_view_proj, current_pos, shadow_sampler);
 
         float3 sun_scatter = sigma_s * light_vis * sun_color * phase;
         float3 ambient_scatter = sigma_s * GlobalConstants.fog_color;

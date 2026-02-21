@@ -116,19 +116,19 @@ float4 pixel_main(OutVertex input) : SV_TARGET
 
     float3 albedo = material.albedo.rgb;
     var albedo_texture = DescriptorHandle<Sampler2D>(uint2(material.albedo_index, PushConstants.bilinear_sampler_index));
-    albedo *= albedo_texture.Sample(input.uv).rgb;
+    albedo *= pow(albedo_texture.Sample(input.uv).rgb, 2.2);
 
     float metallic = material.metallic;
     float roughness = material.roughness;
     var metal_rough_texture =
         DescriptorHandle<Sampler2D>(uint2(material.metal_rough_index, PushConstants.bilinear_sampler_index));
-    float4 mr = metal_rough_texture.Sample(input.uv);
+    float4 mr = pow(metal_rough_texture.Sample(input.uv), 2.2);
     roughness *= mr.g;
     metallic *= mr.b;
 
     float3 emissive = material.emissive;
     var emissive_texture = DescriptorHandle<Sampler2D>(uint2(material.emissive_index, PushConstants.bilinear_sampler_index));
-    emissive *= emissive_texture.Sample(input.uv).rgb;
+    emissive *= pow(emissive_texture.Sample(input.uv).rgb, 2.2);
 
     float3 world_pos = input.world_pos;
     float3 v = normalize(GlobalConstants.cam_pos - world_pos);
@@ -143,8 +143,8 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     n = normalize(mul(tangent_normal, TBN));
 
     float occlusion = 1.0;
-    var occlusion_texture = DescriptorHandle<Sampler2D>(uint2(material.occlusion_index, PushConstants.bilinear_sampler_index));
-    occlusion *= occlusion_texture.Sample(input.uv).r;
+    var occlusion_texture = DescriptorHandle<Sampler2D<float>>(uint2(material.occlusion_index, PushConstants.bilinear_sampler_index));
+    occlusion *= pow(occlusion_texture.Sample(input.uv), 2.2);
 
     float3 lo = float3(0.0, 0.0, 0.0);
     var point_light_buffer = DescriptorHandle<StructuredBuffer<PointLight>>(GlobalConstants.point_light_buffer_index);
@@ -180,6 +180,5 @@ float4 pixel_main(OutVertex input) : SV_TARGET
         DescriptorHandle<SamplerCube>(uint2(PushConstants.ibl_index, PushConstants.bilinear_sampler_index));
     float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, specular_ibl_texture);
     float3 color = ibl + shadow * lo + emissive;
-    color = color / (color + float3(1.0, 1.0, 1.0));
     return float4(color, 1.0);
 }

@@ -16,7 +16,6 @@ struct PushConstant
     uint transform_index;
     uint meshlet_count;
     uint bounding_offset;
-    uint cascade_index;
 };
 ConstantBuffer<PushConstant> PushConstants : register(b0);
 

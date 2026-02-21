@@ -26,11 +26,13 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
     InitImgui();
 
     InitBuffers();
-    InitPBRShader();
+    InitGeometryShader();
     InitShadowPass();
     InitGrassPass();
     InitSkyboxShader();
+    InitBloomPass();
     InitVolumetricFog();
+    InitTonemapPass();
 
     m_profiler = std::make_unique<GPUProfiler>(m_context);
 
@@ -41,21 +43,34 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
             m_context->ResizeBuffers(size.x, size.y);
             m_render_texture.Destroy(m_context);
             m_depth_texture.Destroy(m_context);
-            m_post_process.m_dst_texture.Destroy(m_context);
-            m_post_process.m_src_texture.Destroy(m_context);
+            m_post_process_hdr.m_dst_texture.Destroy(m_context);
+            m_post_process_hdr.m_src_texture.Destroy(m_context);
+            m_post_process_ldr.m_dst_texture.Destroy(m_context);
+            m_post_process_ldr.m_src_texture.Destroy(m_context);
 
             m_render_texture =
                 TextureViewBuilder(m_context, size)
                     .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
-                    .SetFormat(Swift::Format::eRGBA8_UNORM)
+                    .SetFormat(Swift::Format::eRGBA16F)
                     .Build();
 
-            m_post_process.m_src_texture =
+            m_post_process_hdr.m_src_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eRGBA16F)
+                    .Build();
+            m_post_process_hdr.m_dst_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eRGBA16F)
+                    .Build();
+
+            m_post_process_ldr.m_src_texture =
                 TextureViewBuilder(m_context, size)
                     .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
                     .SetFormat(Swift::Format::eRGBA8_UNORM)
                     .Build();
-            m_post_process.m_dst_texture =
+            m_post_process_ldr.m_dst_texture =
                 TextureViewBuilder(m_context, size)
                     .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
                     .SetFormat(Swift::Format::eRGBA8_UNORM)
@@ -82,7 +97,7 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
 {
     CPU_ZONE("Update Constant Buffer")
     constexpr float near_plane = 1.0f;
-    constexpr float far_plane = 150.f;
+    constexpr float far_plane = 400.f;
     const glm::mat4 sun_proj = glm::orthoRH_ZO(-150.0f, 150.0f, -150.f, 150.0f, near_plane, far_plane);
     constexpr float sun_distance = 75.f;
     const glm::vec3 sun_pos = -glm::normalize(m_dir_lights[0].direction) * sun_distance;
@@ -114,7 +129,8 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
         .shadow_texture_index = m_shadow_pass.texture.GetSRVDescriptorIndex(),
         .grass_buffer_index = m_grass_pass.buffer.GetDescriptorIndex(),
     };
-    m_global_constant_buffer.Write(&info, 0, sizeof(GlobalConstantInfo));
+    const auto current_index = m_context->GetFrameIndex();
+    m_global_constant_buffers[current_index].Write(&info, 0, sizeof(GlobalConstantInfo));
 }
 void Renderer::UpdateGrassDialog()
 {
@@ -279,25 +295,34 @@ void Renderer::Update()
 
     command->Begin();
 
-    command->BindConstantBuffer(m_global_constant_buffer.buffer, 1);
+    auto current_index = m_context->GetFrameIndex();
+    command->BindConstantBuffer(m_global_constant_buffers[current_index].buffer, 1);
 
     ClearTextures(command);
 
     DrawGeometry(command);
     DrawGrassPass(command);
     DrawSkybox(command);
+    DrawBloomPass(command);
     DrawVolumetricFog(command);
+    DrawTonemapPass(command);
 
     ImGui::Begin("Debugging");
     UpdateLightsDialog(camera);
     UpdateGrassDialog();
     UpdateFogDialog();
+
+    if (ImGui::CollapsingHeader("Tonemap Pass"))
+    {
+        ImGui::DragFloat("Exposure", &m_tonemap_pass.exposure);
+    }
+
     ImGui::End();
 
     auto* render_target_texture = m_context->GetCurrentSwapchainTexture();
-    command->TransitionImage(m_post_process.m_dst_texture.texture, Swift::ResourceState::eCopySource);
+    command->TransitionImage(m_post_process_ldr.m_dst_texture.texture, Swift::ResourceState::eCopySource);
     command->TransitionImage(render_target_texture, Swift::ResourceState::eCopyDest);
-    command->CopyImageToImage(m_post_process.m_dst_texture.texture, render_target_texture);
+    command->CopyImageToImage(m_post_process_ldr.m_dst_texture.texture, render_target_texture);
 
     RenderImGUI(command, render_target_texture);
 
@@ -317,6 +342,8 @@ void Renderer::GenerateStaticShadowMap() const
     m_context->GetGraphicsQueue()->WaitIdle();
     const auto command = m_context->CreateCommand(Swift::QueueType::eGraphics);
     command->Begin();
+    const auto current_index = m_context->GetFrameIndex();
+    command->BindConstantBuffer(m_global_constant_buffers[current_index].buffer, 1);
     DrawShadowPass(command);
     command->End();
     const auto fence_value = m_context->GetGraphicsQueue()->Execute(command);
@@ -358,7 +385,7 @@ void Renderer::InitContext()
 
     m_render_texture = TextureViewBuilder(m_context, size)
                            .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
-                           .SetFormat(Swift::Format::eRGBA8_UNORM)
+                           .SetFormat(Swift::Format::eRGBA16F)
                            .Build();
 
     m_depth_texture = TextureViewBuilder(m_context, size)
@@ -366,16 +393,28 @@ void Renderer::InitContext()
                           .SetFormat(Swift::Format::eD32F)
                           .Build();
 
-    m_post_process.m_src_texture =
+    m_post_process_hdr.m_src_texture =
+        TextureViewBuilder(m_context, size)
+            .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+            .SetFormat(Swift::Format::eRGBA16F)
+            .Build();
+    m_post_process_hdr.m_dst_texture =
+        TextureViewBuilder(m_context, size)
+            .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+            .SetFormat(Swift::Format::eRGBA16F)
+            .Build();
+
+    m_post_process_ldr.m_src_texture =
         TextureViewBuilder(m_context, size)
             .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
             .SetFormat(Swift::Format::eRGBA8_UNORM)
             .Build();
-    m_post_process.m_dst_texture =
+    m_post_process_ldr.m_dst_texture =
         TextureViewBuilder(m_context, size)
             .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
             .SetFormat(Swift::Format::eRGBA8_UNORM)
             .Build();
+
     m_bilinear_sampler = Swift::SamplerBuilder(m_context).Build();
     m_nearest_sampler =
         Swift::SamplerBuilder(m_context).SetMinFilter(Swift::Filter::eNearest).SetMagFilter(Swift::Filter::eNearest).Build();
@@ -392,7 +431,10 @@ void Renderer::InitContext()
 
 void Renderer::InitBuffers()
 {
-    m_global_constant_buffer = BufferViewBuilder(m_context, 65536).SetNumElements(1).Build();
+    for (auto& buffer : m_global_constant_buffers)
+    {
+        buffer = BufferViewBuilder(m_context, 65536).Build();
+    }
     m_transform_buffer = BufferViewBuilder(m_context, 10'000 * sizeof(glm::mat4)).SetNumElements(10'000).Build();
     m_point_light_buffer = BufferViewBuilder(m_context, sizeof(PointLight) * 100).SetNumElements(100).Build();
     m_dir_light_buffer = BufferViewBuilder(m_context, sizeof(DirectionalLight) * 100).SetNumElements(100).Build();
@@ -410,15 +452,14 @@ void Renderer::InitShadowPass()
                                 .Build();
 
     m_shadow_pass.shader = Swift::GraphicsShaderBuilder(m_context)
-                               .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
                                .SetDSVFormat(Swift::Format::eD32F)
                                .SetMeshShader(shadow_mesh_main_code)
                                .SetPixelShader(shadow_pixel_main_code)
                                .SetDepthTestEnable(true)
                                .SetDepthWriteEnable(true)
-                               .SetDepthBias(10)
+                               .SetDepthBias(1)
                                .SetDepthBiasClamp(0.005f)
-                               .SetSlopeScaledDepthBias(1.5f)
+                               .SetSlopeScaledDepthBias(0.5f)
                                .SetCullMode(Swift::CullMode::eFront)
                                .SetDepthTest(Swift::DepthTest::eLess)
                                .SetPolygonMode(Swift::PolygonMode::eTriangle)
@@ -428,10 +469,8 @@ void Renderer::InitShadowPass()
 
 void Renderer::InitSkyboxShader()
 {
-    std::vector<Swift::Descriptor> descriptors{};
-
     m_skybox_pass.shader = Swift::GraphicsShaderBuilder(m_context)
-                               .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                               .SetRTVFormats({ Swift::Format::eRGBA16F })
                                .SetDSVFormat(Swift::Format::eD32F)
                                .SetMeshShader(skybox_mesh_main_code)
                                .SetPixelShader(skybox_pixel_main_code)
@@ -452,7 +491,7 @@ void Renderer::InitGrassPass()
                               .SetName("Grass Patch Buffer")
                               .Build();
     m_grass_pass.shader = Swift::GraphicsShaderBuilder(m_context)
-                              .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                              .SetRTVFormats({ Swift::Format::eRGBA16F })
                               .SetDSVFormat(Swift::Format::eD32F)
                               .SetAmplificationShader(grass_ampl_main_code)
                               .SetMeshShader(grass_mesh_main_code)
@@ -468,11 +507,8 @@ void Renderer::InitGrassPass()
 
 void Renderer::InitVolumetricFog()
 {
-    std::vector<Swift::Descriptor> descriptors{};
-    const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
-    descriptors.emplace_back(descriptor);
     m_fog_pass.shader = Swift::GraphicsShaderBuilder(m_context)
-                            .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                            .SetRTVFormats({ Swift::Format::eRGBA16F })
                             .SetMeshShader(fog_mesh_main_code)
                             .SetPixelShader(fog_pixel_main_code)
                             .SetPolygonMode(Swift::PolygonMode::eTriangle)
@@ -480,14 +516,10 @@ void Renderer::InitVolumetricFog()
                             .Build();
 }
 
-void Renderer::InitPBRShader()
+void Renderer::InitGeometryShader()
 {
-    std::vector<Swift::Descriptor> descriptors{};
-    const auto descriptor = Swift::DescriptorBuilder(Swift::DescriptorType::eConstant).SetShaderRegister(1).Build();
-    descriptors.emplace_back(descriptor);
-
     m_pbr_shader = Swift::GraphicsShaderBuilder(m_context)
-                       .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                       .SetRTVFormats({ Swift::Format::eRGBA16F })
                        .SetDSVFormat(Swift::Format::eD32F)
                        .SetAmplificationShader(model_ampl_main_code)
                        .SetMeshShader(model_mesh_main_code)
@@ -498,6 +530,42 @@ void Renderer::InitPBRShader()
                        .SetPolygonMode(Swift::PolygonMode::eTriangle)
                        .SetName("PBR Shader")
                        .Build();
+}
+
+void Renderer::InitBloomPass()
+{
+    m_bloom_pass.extract_shader = Swift::GraphicsShaderBuilder(m_context)
+                                      .SetRTVFormats({ Swift::Format::eRGBA16F })
+                                      .SetMeshShader(bloom_extract_mesh_main_code)
+                                      .SetPixelShader(bloom_extract_pixel_main_code)
+                                      .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                      .SetName("Bloom Extract Shader")
+                                      .Build();
+    m_bloom_pass.blur_shader = Swift::GraphicsShaderBuilder(m_context)
+                                   .SetRTVFormats({ Swift::Format::eRGBA16F })
+                                   .SetMeshShader(bloom_blur_mesh_main_code)
+                                   .SetPixelShader(bloom_blur_pixel_main_code)
+                                   .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                   .SetName("Bloom Blur Shader")
+                                   .Build();
+    m_bloom_pass.combine_shader = Swift::GraphicsShaderBuilder(m_context)
+                                      .SetRTVFormats({ Swift::Format::eRGBA16F })
+                                      .SetMeshShader(bloom_combine_mesh_main_code)
+                                      .SetPixelShader(bloom_combine_pixel_main_code)
+                                      .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                      .SetName("Bloom Combine Shader")
+                                      .Build();
+}
+
+void Renderer::InitTonemapPass()
+{
+    m_tonemap_pass.shader = Swift::GraphicsShaderBuilder(m_context)
+                                .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                .SetMeshShader(tonemap_mesh_main_code)
+                                .SetPixelShader(tonemap_pixel_main_code)
+                                .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                .SetName("Tonemap Shader")
+                                .Build();
 }
 
 std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const glm::mat4& transform)
@@ -718,22 +786,17 @@ void Renderer::DrawShadowPass(Swift::ICommand* command) const
             uint32_t mesh_vertex_buffer;
             uint32_t mesh_triangle_buffer;
 
-            int material_index;
             uint32_t transform_index;
             uint32_t meshlet_count;
             uint32_t bounding_offset;
-
-            uint32_t ibl_index;
         } push_constants{
             .vertex_buffer = renderable.m_vertex_buffer.GetDescriptorIndex(),
             .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
             .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
             .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
-            .material_index = renderable.m_material_index,
             .transform_index = renderable.m_transform_index,
             .meshlet_count = renderable.m_meshlet_count,
             .bounding_offset = renderable.m_bounding_offset,
-            .ibl_index = m_specular_ibl_texture.GetSRVDescriptorIndex(),
         };
         command->PushConstants(&push_constants, sizeof(PushConstants));
         renderable.Draw(command, false);
@@ -777,20 +840,85 @@ void Renderer::DrawGrassPass(Swift::ICommand* command) const
     command->DispatchMesh(num_amp_groups, 1, 1);
 }
 
+void Renderer::DrawBloomPass(Swift::ICommand* command)
+{
+    command->TransitionImage(m_render_texture.texture, Swift::ResourceState::eShaderResource);
+    command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
+
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+
+    command->BindShader(m_bloom_pass.extract_shader);
+    command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
+    const struct PushConstant
+    {
+        uint32_t scene_texture_index;
+        uint32_t bilinear_sampler_index;
+    } pc{
+        .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
+        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+    };
+    command->PushConstants(&pc, sizeof(PushConstant));
+    command->DispatchMesh(1, 1, 1);
+
+    command->BindShader(m_bloom_pass.blur_shader);
+    for (int i = 0; i < m_bloom_pass.blur_count; ++i)
+    {
+        m_post_process_hdr.Swap();
+        command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
+        command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
+        command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
+        const struct BlurPushConstant
+        {
+            uint32_t bloom_texture_index;
+            uint32_t bilinear_sampler_index;
+            uint32_t horizontal;
+        } blur_pc{
+            .bloom_texture_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
+            .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+            .horizontal = i % 2 == 0 ? 1u : 0u,
+        };
+        command->PushConstants(&blur_pc, sizeof(BlurPushConstant));
+        command->DispatchMesh(1, 1, 1);
+    }
+
+    command->BindShader(m_bloom_pass.combine_shader);
+    m_post_process_hdr.Swap();
+    command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
+    command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
+    command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
+    const struct CombinePushConstant
+    {
+        uint32_t scene_texture_index;
+        uint32_t bloom_blur_texture_index;
+        uint32_t bilinear_sampler_index;
+        float exposure;
+    } combine_pc{
+        .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
+        .bloom_blur_texture_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
+        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+        .exposure = m_tonemap_pass.exposure,
+    };
+    command->PushConstants(&combine_pc, sizeof(CombinePushConstant));
+    command->DispatchMesh(1, 1, 1);
+}
+
 void Renderer::DrawVolumetricFog(Swift::ICommand* command)
 {
-    m_post_process.Swap();
-    command->TransitionImage(m_render_texture.texture, Swift::ResourceState::eShaderResource);
+    m_post_process_hdr.Swap();
+    command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
     command->TransitionImage(m_depth_texture.texture, Swift::ResourceState::eShaderResource);
-    command->TransitionImage(m_post_process.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
-    auto& camera = m_engine->GetCamera();
+    command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
     const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
     command->BindShader(m_fog_pass.shader);
-    command->BindRenderTargets(m_post_process.m_dst_texture.render_target, nullptr);
+    command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
     const struct PushConstant
     {
         uint32_t scene_texture_index;
@@ -800,11 +928,38 @@ void Renderer::DrawVolumetricFog(Swift::ICommand* command)
 
         uint32_t shadow_sampler_index;
     } pc{
-        .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
+        .scene_texture_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
         .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
         .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
         .point_sampler_index = m_nearest_sampler->GetDescriptorIndex(),
         .shadow_sampler_index = m_shadow_comparison_sampler->GetDescriptorIndex(),
+    };
+    command->PushConstants(&pc, sizeof(PushConstant));
+    command->DispatchMesh(1, 1, 1);
+}
+
+void Renderer::DrawTonemapPass(Swift::ICommand* command)
+{
+    m_post_process_hdr.Swap();
+
+    command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
+    command->TransitionImage(m_post_process_ldr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+    command->BindShader(m_tonemap_pass.shader);
+    command->BindRenderTargets(m_post_process_ldr.m_dst_texture.render_target, nullptr);
+    const struct PushConstant
+    {
+        uint32_t source_index;
+        uint32_t bilinear_sampler_index;
+        float exposure;
+    } pc{
+        .source_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
+        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+        .exposure = m_tonemap_pass.exposure,
     };
     command->PushConstants(&pc, sizeof(PushConstant));
     command->DispatchMesh(1, 1, 1);

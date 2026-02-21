@@ -318,12 +318,16 @@ private:
     void InitSkyboxShader();
     void InitGrassPass();
     void InitVolumetricFog();
-    void InitPBRShader();
+    void InitGeometryShader();
+    void InitBloomPass();
+    void InitTonemapPass();
     void DrawGeometry(Swift::ICommand* command) const;
     void DrawSkybox(Swift::ICommand* command) const;
     void DrawShadowPass(Swift::ICommand* command) const;
     void DrawGrassPass(Swift::ICommand* command) const;
+    void DrawBloomPass(Swift::ICommand* command);
     void DrawVolumetricFog(Swift::ICommand* command);
+    void DrawTonemapPass(Swift::ICommand* command);
     void InitImgui() const;
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
@@ -379,7 +383,7 @@ private:
     TextureView m_render_texture;
     TextureView m_depth_texture;
 
-    BufferView m_global_constant_buffer;
+    std::array<BufferView, 3> m_global_constant_buffers;
     BufferView m_transform_buffer;
     BufferView m_material_buffer;
     BufferView m_cull_data_buffer;
@@ -396,29 +400,42 @@ private:
         TextureView texture;
     } m_skybox_pass;
 
+    struct TonemapPass
+    {
+        Swift::IShader* shader = nullptr;
+        float exposure = 1.0f;
+    } m_tonemap_pass;
+
     struct FogPass
     {
-        float density = 0.04f;
-        float max_distance = 200.f;
-        float scattering_factor = 0.8f;
+        float density = 0.02f;
+        float max_distance = 400.f;
+        float scattering_factor = 0.3f;
         glm::vec3 scattering_color = glm::vec3(0.6, 0.65, 0.7);
         glm::vec3 absorption_color = glm::vec3(0.05, 0.2, 0.8);
-        float scattering_coefficient = 0.6f;
-        float absorption_coefficient = 0.4f;
-        uint32_t raymarch_steps = 64;
+        float scattering_coefficient = 0.3f;
+        float absorption_coefficient = 0.7f;
+        uint32_t raymarch_steps = 16;
         Swift::IShader* shader = nullptr;
     } m_fog_pass;
+
+    struct BloomPass
+    {
+        Swift::IShader* extract_shader;
+        Swift::IShader* blur_shader;
+        Swift::IShader* combine_shader;
+        uint32_t blur_count = 10;
+    } m_bloom_pass;
 
     struct PostProcess
     {
         TextureView m_src_texture;
         TextureView m_dst_texture;
 
-        void Swap()
-        {
-            std::swap(m_src_texture, m_dst_texture);
-        }
-    } m_post_process;
+        void Swap() { std::swap(m_src_texture, m_dst_texture); }
+    } m_post_process_hdr;
+
+    PostProcess m_post_process_ldr;
 
     struct GrassPass
     {
