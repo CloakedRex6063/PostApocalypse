@@ -5,6 +5,7 @@ struct GlobalConstant
     float4x4 proj;
     float4x4 sun_view_proj;
     float4x4 inv_view_proj;
+    float4x4 inv_proj;
 
     float3 cam_pos;
     uint cubemap_index;
@@ -32,6 +33,11 @@ struct GlobalConstant
 
     uint shadow_map_index;
     uint grass_buffer_index;
+    uint ibl_texture_index;
+    uint ssao_texture_index;
+
+    float2 screen_size;
+    float2 inv_screen_size;
 };
 ConstantBuffer<GlobalConstant> GlobalConstants : register(b1);
 

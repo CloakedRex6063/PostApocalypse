@@ -316,6 +316,7 @@ private:
     void InitBuffers();
     void InitDepthPrepass();
     void InitShadowPass();
+    void InitSSAOPass();
     void InitSkyboxShader();
     void InitGrassPass();
     void InitVolumetricFog();
@@ -324,6 +325,7 @@ private:
     void InitTonemapPass();
     void DrawDepthPrePass(Swift::ICommand* command) const;
     void DrawGeometry(Swift::ICommand* command) const;
+    void DrawSSAOPass(Swift::ICommand* command) const;
     void DrawSkybox(Swift::ICommand* command) const;
     void DrawShadowPass(Swift::ICommand* command) const;
     void DrawGrassPass(Swift::ICommand* command) const;
@@ -343,6 +345,7 @@ private:
         glm::mat4 proj;
         glm::mat4 sun_view_proj;
         glm::mat4 inv_view_proj;
+        glm::mat4 inv_proj;
 
         glm::vec3 cam_pos;
         uint32_t cubemap_index;
@@ -370,6 +373,11 @@ private:
 
         uint32_t shadow_texture_index;
         uint32_t grass_buffer_index;
+        uint32_t ibl_texture_index;
+        uint32_t ssao_texture_index;
+
+        glm::vec2 screen_size;
+        glm::vec2 inv_screen_size;
     };
 
     Engine* m_engine;
@@ -407,6 +415,16 @@ private:
         TextureView texture;
     } m_skybox_pass;
 
+    struct SSAOPass
+    {
+        Swift::IShader* gen_shader = nullptr;
+        Swift::IShader* blur_shader = nullptr;
+        TextureView gen_texture;
+        TextureView blur_texture;
+        TextureView noise_texture;
+        BufferView kernel_buffer;
+    } m_ssao_pass;
+
     struct TonemapPass
     {
         Swift::IShader* shader = nullptr;
@@ -422,7 +440,7 @@ private:
         glm::vec3 absorption_color = glm::vec3(0.05, 0.2, 0.8);
         float scattering_coefficient = 0.3f;
         float absorption_coefficient = 0.7f;
-        uint32_t raymarch_steps = 16;
+        uint32_t raymarch_steps = 32;
         Swift::IShader* shader = nullptr;
     } m_fog_pass;
 

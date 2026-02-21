@@ -143,7 +143,8 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     n = normalize(mul(tangent_normal, TBN));
 
     float occlusion = 1.0;
-    var occlusion_texture = DescriptorHandle<Sampler2D<float>>(uint2(material.occlusion_index, PushConstants.bilinear_sampler_index));
+    var occlusion_texture =
+        DescriptorHandle<Sampler2D<float>>(uint2(material.occlusion_index, PushConstants.bilinear_sampler_index));
     occlusion *= pow(occlusion_texture.Sample(input.uv), 2.2);
 
     float3 lo = float3(0.0, 0.0, 0.0);
@@ -179,6 +180,13 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     var specular_ibl_texture =
         DescriptorHandle<SamplerCube>(uint2(PushConstants.ibl_index, PushConstants.bilinear_sampler_index));
     float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, specular_ibl_texture);
-    float3 color = ibl + shadow * lo + emissive;
+
+    var ssao_sampler =
+        DescriptorHandle<Sampler2D<float>>(uint2(GlobalConstants.ssao_texture_index, PushConstants.bilinear_sampler_index));
+    float2 screen_uv = input.position.xy * GlobalConstants.inv_screen_size;
+    float ssao = ssao_sampler.Sample(screen_uv);
+    occlusion *= ssao;
+
+    float3 color = occlusion * ibl + shadow * lo + emissive;
     return float4(color, 1.0);
 }

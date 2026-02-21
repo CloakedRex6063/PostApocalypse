@@ -27,6 +27,7 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
 
     InitBuffers();
     InitDepthPrepass();
+    InitSSAOPass();
     InitGeometryShader();
     InitShadowPass();
     InitGrassPass();
@@ -82,6 +83,20 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
                     .SetFlags(EnumFlags(Swift::TextureFlags::eDepthStencil) | Swift::TextureFlags::eShaderResource)
                     .SetFormat(Swift::Format::eD32F)
                     .Build();
+
+            m_ssao_pass.gen_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eR8_UNORM)
+                    .SetName("SSAO Gen Texture")
+                    .Build();
+
+            m_ssao_pass.blur_texture =
+                TextureViewBuilder(m_context, size)
+                    .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+                    .SetFormat(Swift::Format::eR8_UNORM)
+                    .SetName("SSAO Blur Texture")
+                    .Build();
         });
 }
 
@@ -103,12 +118,16 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
     constexpr float sun_distance = 75.f;
     const glm::vec3 sun_pos = -glm::normalize(m_dir_lights[0].direction) * sun_distance;
     const auto sun_view = glm::lookAtRH(sun_pos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    auto screen_size = m_engine->GetWindow().GetSize();
+    auto inv_screen_size = glm::vec2(1.0) / glm::vec2(screen_size);
     const GlobalConstantInfo info{
         .view_proj = camera.m_proj_matrix * camera.m_view_matrix,
         .view = camera.m_view_matrix,
         .proj = camera.m_proj_matrix,
         .sun_view_proj = sun_proj * sun_view,
         .inv_view_proj = glm::inverse(camera.m_proj_matrix * camera.m_view_matrix),
+        .inv_proj = glm::inverse(camera.m_proj_matrix),
         .cam_pos = camera.m_position,
         .cubemap_index = m_skybox_pass.texture.GetSRVDescriptorIndex(),
         .fog_density = m_fog_pass.density,
@@ -129,6 +148,10 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
         .dir_light_count = static_cast<uint32_t>(m_dir_lights.size()),
         .shadow_texture_index = m_shadow_pass.texture.GetSRVDescriptorIndex(),
         .grass_buffer_index = m_grass_pass.buffer.GetDescriptorIndex(),
+        .ibl_texture_index = m_specular_ibl_texture.GetSRVDescriptorIndex(),
+        .ssao_texture_index = m_ssao_pass.blur_texture.GetSRVDescriptorIndex(),
+        .screen_size = screen_size,
+        .inv_screen_size = inv_screen_size,
     };
     const auto current_index = m_context->GetFrameIndex();
     m_global_constant_buffers[current_index].Write(&info, 0, sizeof(GlobalConstantInfo));
@@ -302,6 +325,7 @@ void Renderer::Update()
     ClearTextures(command);
 
     DrawDepthPrePass(command);
+    DrawSSAOPass(command);
     DrawGeometry(command);
     DrawGrassPass(command);
     DrawSkybox(command);
@@ -395,6 +419,20 @@ void Renderer::InitContext()
                           .SetFormat(Swift::Format::eD32F)
                           .Build();
 
+    m_ssao_pass.gen_texture =
+        TextureViewBuilder(m_context, size)
+            .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+            .SetFormat(Swift::Format::eR8_UNORM)
+            .SetName("SSAO Gen Texture")
+            .Build();
+
+    m_ssao_pass.blur_texture =
+        TextureViewBuilder(m_context, size)
+            .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
+            .SetFormat(Swift::Format::eR8_UNORM)
+            .SetName("SSAO Blur Texture")
+            .Build();
+
     m_post_process_hdr.m_src_texture =
         TextureViewBuilder(m_context, size)
             .SetFlags(EnumFlags(Swift::TextureFlags::eRenderTarget) | Swift::TextureFlags::eShaderResource)
@@ -481,6 +519,54 @@ void Renderer::InitShadowPass()
                                .SetPolygonMode(Swift::PolygonMode::eTriangle)
                                .SetName("Shadow Shader")
                                .Build();
+}
+
+void Renderer::InitSSAOPass()
+{
+    m_ssao_pass.gen_shader = Swift::GraphicsShaderBuilder(m_context)
+                                 .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                 .SetMeshShader(ssao_mesh_main_code)
+                                 .SetPixelShader(ssao_pixel_main_code)
+                                 .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                 .SetName("SSAO Shader")
+                                 .Build();
+    m_ssao_pass.blur_shader = Swift::GraphicsShaderBuilder(m_context)
+                                  .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                  .SetMeshShader(ssao_blur_mesh_main_code)
+                                  .SetPixelShader(ssao_blur_pixel_main_code)
+                                  .SetPolygonMode(Swift::PolygonMode::eTriangle)
+                                  .SetName("SSAO Blur Shader")
+                                  .Build();
+
+    std::uniform_real_distribution<float> random_floats(0.0, 1.0);
+    std::default_random_engine generator;
+
+    std::vector<glm::vec4> kernels;
+    for (int i = 0; i < 64; ++i)
+    {
+        glm::vec3 sample(random_floats(generator) * 2.0 - 1.0, random_floats(generator) * 2.0 - 1.0, random_floats(generator));
+        sample = glm::normalize(sample);
+        sample *= random_floats(generator);
+        float scale = static_cast<float>(i) / 64.0;
+        scale = glm::lerp(0.1f, 1.0f, scale * scale);
+        sample *= scale;
+        kernels.push_back({ sample, 0.0 });
+    }
+    m_ssao_pass.kernel_buffer =
+        BufferViewBuilder(m_context, 64 * sizeof(glm::vec4)).SetNumElements(64).SetData(kernels.data()).Build();
+
+    std::vector<glm::vec4> ssao_noise;
+    for (int i = 0; i < 16; i++)
+    {
+        glm::vec4 noise(random_floats(generator) * 2.0 - 1.0, random_floats(generator) * 2.0 - 1.0, 0.0, 0.0);
+        ssao_noise.push_back(noise);
+    }
+    m_ssao_pass.noise_texture = TextureViewBuilder(m_context, { 4, 4 })
+                                    .SetFormat(Swift::Format::eRGBA16F)
+                                    .SetFlags(Swift::TextureFlags::eShaderResource)
+                                    .SetName("Noise Texture")
+                                    .SetData(ssao_noise.data())
+                                    .Build();
 }
 
 void Renderer::InitSkyboxShader()
@@ -763,6 +849,7 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
     command->BindRenderTargets(m_render_texture.render_target, m_depth_texture.depth_stencil);
     command->BindShader(m_pbr_shader);
+    command->TransitionImage(m_ssao_pass.blur_texture.texture, Swift::ResourceState::eShaderResource);
 
     for (const auto& renderable : m_renderables)
     {
@@ -780,7 +867,6 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
             uint32_t transform_index;
             uint32_t meshlet_count;
             uint32_t bounding_offset;
-            uint32_t ibl_index;
         } push_constants{
             .shadow_sampler_index = m_shadow_comparison_sampler->GetDescriptorIndex(),
             .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
@@ -792,11 +878,59 @@ void Renderer::DrawGeometry(Swift::ICommand* command) const
             .transform_index = renderable.m_transform_index,
             .meshlet_count = renderable.m_meshlet_count,
             .bounding_offset = renderable.m_bounding_offset,
-            .ibl_index = m_specular_ibl_texture.GetSRVDescriptorIndex(),
         };
         command->PushConstants(&push_constants, sizeof(PushConstants));
         renderable.Draw(command, true);
     }
+}
+
+void Renderer::DrawSSAOPass(Swift::ICommand* command) const
+{
+    const auto& window = m_engine->GetWindow();
+    auto window_size = window.GetSize();
+    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
+    command->TransitionImage(m_depth_texture.texture, Swift::ResourceState::eDepthRead);
+    command->TransitionImage(m_ssao_pass.gen_texture.texture, Swift::ResourceState::eRenderTarget);
+    command->TransitionImage(m_ssao_pass.noise_texture.texture, Swift::ResourceState::eShaderResource);
+    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
+    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+    command->BindShader(m_ssao_pass.gen_shader);
+    command->BindRenderTargets(m_ssao_pass.gen_texture.render_target, nullptr);
+    const auto noise_scale = glm::vec2(float_size[0] / 4.f, float_size[1] / 4.f);
+    const struct PushConstant
+    {
+        uint32_t depth_texture_index;
+        uint32_t sampler_index;
+        uint32_t noise_texture_index;
+        uint32_t kernel_buffer_index;
+
+        float sample_rad;
+        glm::vec2 noise_scale;
+    } pc{
+        .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
+        .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+        .noise_texture_index = m_ssao_pass.noise_texture.GetSRVDescriptorIndex(),
+        .kernel_buffer_index = m_ssao_pass.kernel_buffer.GetDescriptorIndex(),
+        .sample_rad = 0.5,
+        .noise_scale = noise_scale,
+    };
+    command->PushConstants(&pc, sizeof(PushConstant));
+    command->DispatchMesh(1, 1, 1);
+
+    command->TransitionImage(m_ssao_pass.blur_texture.texture, Swift::ResourceState::eRenderTarget);
+    command->TransitionImage(m_ssao_pass.gen_texture.texture, Swift::ResourceState::eShaderResource);
+    command->BindShader(m_ssao_pass.blur_shader);
+    command->BindRenderTargets(m_ssao_pass.blur_texture.render_target, nullptr);
+    const struct BlurPushConstant
+    {
+        uint32_t ssao_texture_index;
+        uint32_t sampler_index;
+    } blur_pc{
+        .ssao_texture_index = m_ssao_pass.gen_texture.GetSRVDescriptorIndex(),
+        .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+    };
+    command->PushConstants(&blur_pc, sizeof(BlurPushConstant));
+    command->DispatchMesh(1, 1, 1);
 }
 
 void Renderer::DrawSkybox(Swift::ICommand* command) const

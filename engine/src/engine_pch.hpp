@@ -10,6 +10,7 @@
 #include "ranges"
 #include "print"
 #include "optional"
+#include "random"
 
 #include "GLFW/glfw3.h"
 #define GLFW_EXPOSE_NATIVE_WIN32
