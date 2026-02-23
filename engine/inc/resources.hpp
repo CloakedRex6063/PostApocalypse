@@ -95,7 +95,7 @@ public:
     Resources(Engine* engine);
     ~Resources();
 
-    std::shared_ptr<Actor> LoadModel(const std::filesystem::path& path, glm::vec3 scale);
+    std::shared_ptr<Actor> LoadModel(const std::filesystem::path& path, glm::vec3 position, glm::vec3 scale);
     Swift::ITexture* LoadTexture(const std::filesystem::path& path) const;
 
 private:
@@ -119,8 +119,11 @@ private:
                   std::vector<Node>& nodes,
                   std::vector<glm::mat4>& transforms,
                   const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges);
-    std::tuple<std::vector<Node>, std::vector<glm::mat4>>
-    LoadNodes(const fastgltf::Asset& asset, const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges, glm::vec3 scale);
+    std::tuple<std::vector<Node>, std::vector<glm::mat4>> LoadNodes(
+        const fastgltf::Asset& asset,
+        const std::vector<std::pair<uint32_t, uint32_t>>& mesh_ranges,
+        glm::vec3 position,
+        glm::vec3 scale);
     static std::vector<uint32_t> LoadIndices(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive);
     static std::vector<Vertex> LoadVertices(const fastgltf::Asset& asset,
                                             const fastgltf::Primitive& primitive,

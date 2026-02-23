@@ -1,5 +1,6 @@
 #pragma once
 #include "camera.hpp"
+#include "editor.hpp"
 #include "renderer.hpp"
 #include "resources.hpp"
 #include "scene.hpp"
@@ -15,7 +16,6 @@ concept GameConcept =
     };
 
 
-
 class Engine
 {
 public:
@@ -27,6 +27,7 @@ public:
 
     auto& GetWindow() const { return *m_window; }
     auto& GetInput() const { return *m_input; }
+    auto& GetEditor() const { return *m_editor; }
     auto& GetRenderer() const { return *m_renderer; }
     auto& GetCamera() const { return *m_camera; }
     auto& GetResources() const { return *m_resources; }
@@ -36,6 +37,7 @@ public:
 private:
     std::unique_ptr<Window> m_window;
     std::unique_ptr<Input> m_input;
+    std::unique_ptr<Editor> m_editor;
     std::unique_ptr<Camera> m_camera;
     std::unique_ptr<Renderer> m_renderer;
     std::unique_ptr<Resources> m_resources;

@@ -246,15 +246,85 @@ struct PointLight
     float range = 100.0f;
 };
 
+struct DepthPrePass
+{
+    Swift::IShader* shader = nullptr;
+};
+
+struct SkyboxPass
+{
+    Swift::IShader* shader = nullptr;
+    TextureView texture;
+};
+
+struct SSAOPass
+{
+    Swift::IShader* gen_shader = nullptr;
+    Swift::IShader* blur_shader = nullptr;
+    TextureView gen_texture;
+    TextureView blur_texture;
+    TextureView noise_texture;
+    BufferView kernel_buffer;
+};
+
+struct TonemapPass
+{
+    Swift::IShader* shader = nullptr;
+    float exposure = 1.0f;
+};
+
+struct FogPass
+{
+    float density = 0.02f;
+    float max_distance = 400.f;
+    float scattering_factor = 0.6f;
+    glm::vec3 scattering_color = glm::vec3(0.6, 0.65, 0.7);
+    glm::vec3 absorption_color = glm::vec3(0.05, 0.2, 0.8);
+    float scattering_coefficient = 0.3f;
+    float absorption_coefficient = 0.7f;
+    uint32_t raymarch_steps = 32;
+    Swift::IShader* shader = nullptr;
+};
+
+struct BloomPass
+{
+    Swift::IShader* extract_shader;
+    Swift::IShader* blur_shader;
+    Swift::IShader* combine_shader;
+    uint32_t blur_count = 10;
+};
+
+struct PostProcess
+{
+    TextureView m_src_texture;
+    TextureView m_dst_texture;
+
+    void Swap() { std::swap(m_src_texture, m_dst_texture); }
+};
+
+struct GrassPass
+{
+    float wind_speed = 1.f;
+    float wind_strength = 0.4f;
+    float lod_distance = 50.f;
+    bool apply_view_space_thicken = false;
+    Swift::IShader* shader = nullptr;
+    BufferView buffer;
+    std::vector<GrassPatch> patches;
+};
+
+struct ShadowPass
+{
+    Swift::IShader* shader = nullptr;
+    TextureView texture;
+};
+
 class Renderer
 {
 public:
     explicit Renderer(Engine* engine);
     ~Renderer();
     void UpdateGlobalConstantBuffer(const Camera& camera) const;
-    void UpdateGrassDialog();
-    void UpdateFogDialog();
-    void UpdateLightsDialog(Camera& camera);
     void RenderImGUI(Swift::ICommand* command, Swift::ITexture* render_target_texture) const;
     void ClearTextures(Swift::ICommand* command) const;
     static void ImGUINewFrame();
@@ -311,7 +381,20 @@ public:
 
     void GenerateStaticShadowMap() const;
 
+    std::span<PointLight> GetPointLights() { return m_point_lights; }
+    std::span<DirectionalLight> GetDirectionalLights() { return m_dir_lights; }
+
+    DepthPrePass& GetDepthPrepass() { return m_depth_prepass; }
+    TonemapPass& GetTonemapPass() { return m_tonemap_pass; }
+    SkyboxPass& GetSkyboxPass() { return m_skybox_pass; }
+    SSAOPass& GetSSAOPass() { return m_ssao_pass; }
+    BloomPass& GetBloomPass() { return m_bloom_pass; }
+    FogPass& GetFogPass() { return m_fog_pass; }
+    GrassPass& GetGrassPass() { return m_grass_pass; }
+    ShadowPass& GetShadowPass() { return m_shadow_pass; }
+
 private:
+    friend class Editor;
     void InitContext();
     void InitBuffers();
     void InitDepthPrepass();
@@ -337,6 +420,17 @@ private:
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
 
     std::unique_ptr<GPUProfiler> m_profiler;
+
+    DepthPrePass m_depth_prepass;
+    SkyboxPass m_skybox_pass;
+    SSAOPass m_ssao_pass;
+    TonemapPass m_tonemap_pass;
+    FogPass m_fog_pass;
+    PostProcess m_post_process_hdr;
+    PostProcess m_post_process_ldr;
+    BloomPass m_bloom_pass;
+    GrassPass m_grass_pass;
+    ShadowPass m_shadow_pass;
 
     struct GlobalConstantInfo
     {
@@ -383,8 +477,6 @@ private:
     Engine* m_engine;
     Swift::IContext* m_context = nullptr;
 
-    bool m_rebuild_lights = false;
-
     TextureView m_dummy_white_texture;
     TextureView m_dummy_black_texture;
     TextureView m_dummy_normal_texture;
@@ -403,81 +495,6 @@ private:
     Swift::ISampler* m_bilinear_sampler;
     Swift::ISampler* m_shadow_comparison_sampler;
     Swift::ISampler* m_nearest_sampler;
-
-    struct DepthPrePass
-    {
-        Swift::IShader* shader = nullptr;
-    } m_depth_prepass;
-
-    struct SkyboxPass
-    {
-        Swift::IShader* shader = nullptr;
-        TextureView texture;
-    } m_skybox_pass;
-
-    struct SSAOPass
-    {
-        Swift::IShader* gen_shader = nullptr;
-        Swift::IShader* blur_shader = nullptr;
-        TextureView gen_texture;
-        TextureView blur_texture;
-        TextureView noise_texture;
-        BufferView kernel_buffer;
-    } m_ssao_pass;
-
-    struct TonemapPass
-    {
-        Swift::IShader* shader = nullptr;
-        float exposure = 1.0f;
-    } m_tonemap_pass;
-
-    struct FogPass
-    {
-        float density = 0.02f;
-        float max_distance = 400.f;
-        float scattering_factor = 0.6f;
-        glm::vec3 scattering_color = glm::vec3(0.6, 0.65, 0.7);
-        glm::vec3 absorption_color = glm::vec3(0.05, 0.2, 0.8);
-        float scattering_coefficient = 0.3f;
-        float absorption_coefficient = 0.7f;
-        uint32_t raymarch_steps = 32;
-        Swift::IShader* shader = nullptr;
-    } m_fog_pass;
-
-    struct BloomPass
-    {
-        Swift::IShader* extract_shader;
-        Swift::IShader* blur_shader;
-        Swift::IShader* combine_shader;
-        uint32_t blur_count = 10;
-    } m_bloom_pass;
-
-    struct PostProcess
-    {
-        TextureView m_src_texture;
-        TextureView m_dst_texture;
-
-        void Swap() { std::swap(m_src_texture, m_dst_texture); }
-    } m_post_process_hdr;
-
-    PostProcess m_post_process_ldr;
-
-    struct GrassPass
-    {
-        float wind_speed = 1.f;
-        float wind_strength = 0.4f;
-        float lod_distance = 50.f;
-        bool apply_view_space_thicken = false;
-        Swift::IShader* shader = nullptr;
-        BufferView buffer;
-        std::vector<GrassPatch> patches;
-    } m_grass_pass;
-
-    struct ShadowPass
-    {
-        Swift::IShader* shader = nullptr;
-        TextureView texture;
-    } m_shadow_pass;
 
     Swift::IShader* m_pbr_shader = nullptr;
     std::vector<PointLight> m_point_lights;

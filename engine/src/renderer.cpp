@@ -156,125 +156,7 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
     const auto current_index = m_context->GetFrameIndex();
     m_global_constant_buffers[current_index].Write(&info, 0, sizeof(GlobalConstantInfo));
 }
-void Renderer::UpdateGrassDialog()
-{
-    if (ImGui::CollapsingHeader("Grass"))
-    {
-        ImGui::DragFloat("Wind Speed", &m_grass_pass.wind_speed);
-        ImGui::DragFloat("Wind Strength", &m_grass_pass.wind_strength);
-        ImGui::DragFloat("Grass LOD Distance", &m_grass_pass.lod_distance);
-        ImGui::Checkbox("Apply View Space Thickening", &m_grass_pass.apply_view_space_thicken);
 
-        if (ImGui::Button("Add Grass Patch"))
-        {
-            m_grass_pass.patches.emplace_back(GrassPatch{});
-            m_grass_pass.buffer.Write(m_grass_pass.patches.data(), 0, sizeof(GrassPatch) * m_grass_pass.patches.size());
-        }
-
-        bool update_patches = false;
-        for (uint32_t i = 0; i < m_grass_pass.patches.size(); ++i)
-        {
-            ImGui::PushID(("Grass " + std::to_string(i)).c_str());
-            auto& patch = m_grass_pass.patches[i];
-            if (ImGui::DragFloat3("Position", glm::value_ptr(patch.position)))
-            {
-                update_patches = true;
-            }
-            if (ImGui::DragFloat("Height", &patch.height))
-            {
-                update_patches = true;
-            }
-            if (ImGui::DragFloat("Radius", &patch.radius))
-            {
-                update_patches = true;
-            }
-            ImGui::PopID();
-        }
-        if (update_patches)
-        {
-            m_grass_pass.buffer.Write(m_grass_pass.patches.data(), 0, sizeof(GrassPatch) * m_grass_pass.patches.size());
-        }
-    }
-}
-void Renderer::UpdateFogDialog()
-{
-    if (ImGui::CollapsingHeader("Volumetric Fog"))
-    {
-        ImGui::DragFloat("Fog Density", &m_fog_pass.density);
-        ImGui::DragFloat("Fog Max Distance", &m_fog_pass.max_distance);
-        ImGui::DragFloat3("Scattering Fog Color", glm::value_ptr(m_fog_pass.scattering_color));
-        ImGui::DragFloat3("Absorption Fog Color", glm::value_ptr(m_fog_pass.absorption_color));
-        ImGui::DragInt("Ray March Steps", reinterpret_cast<int*>(&m_fog_pass.raymarch_steps));
-        ImGui::DragFloat("Scattering Factor", &m_fog_pass.scattering_factor);
-        ImGui::DragFloat("Scattering Coefficient", &m_fog_pass.scattering_coefficient);
-        ImGui::DragFloat("Absorption Coefficient", &m_fog_pass.absorption_coefficient);
-    }
-}
-void Renderer::UpdateLightsDialog(Camera& camera)
-{
-    ImGui::DragFloat("Move Speed", &camera.m_move_speed);
-    if (ImGui::CollapsingHeader("Lights"))
-    {
-        if (ImGui::Button("Add Directional Light"))
-        {
-            AddDirectionalLight({});
-        }
-
-        for (int i = 0; i < m_dir_lights.size(); ++i)
-        {
-            auto& dir_light = m_dir_lights[i];
-            auto& euler = m_dir_light_eulers[i];
-            ImGui::PushID(i);
-            if (ImGui::SliderFloat3("Light Rotation (Euler)", glm::value_ptr(euler), -180.0f, 180.0f))
-            {
-                glm::mat4 rot = glm::yawPitchRoll(glm::radians(euler.y), glm::radians(euler.x), glm::radians(euler.z));
-                auto forward = glm::vec3(0.0f, 0.0f, -1.0f);
-                dir_light.direction = glm::normalize(glm::vec3(rot * glm::vec4(forward, 0.0f)));
-                m_rebuild_lights = true;
-            }
-
-            if (ImGui::DragFloat("Intensity", &dir_light.intensity))
-            {
-                m_rebuild_lights = true;
-            }
-            if (ImGui::DragFloat3("Color", glm::value_ptr(dir_light.color)))
-            {
-                m_rebuild_lights = true;
-            }
-            ImGui::PopID();
-        }
-    }
-
-    if (m_rebuild_lights)
-    {
-        constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
-                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                           ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar;
-
-        ImGuiIO& io = ImGui::GetIO();
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, 10), ImGuiCond_Always, ImVec2(1, 0));
-
-        ImGui::Begin("##rebuild_alert", nullptr, flags);
-
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.35f, 0.0f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.45f, 0.0f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.50f, 0.25f, 0.0f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.0f, 1.0f));
-
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ImGui::GetStyle().FramePadding.y);
-        ImGui::Text("Lighting needs to be rebuilt [!]");
-        ImGui::SameLine();
-        if (ImGui::Button("Rebuild Lights"))
-        {
-            GenerateStaticShadowMap();
-            m_dir_light_buffer.Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
-            m_rebuild_lights = false;
-        }
-
-        ImGui::PopStyleColor(4);
-        ImGui::End();
-    }
-}
 void Renderer::RenderImGUI(Swift::ICommand* command, Swift::ITexture* render_target_texture) const
 {
     GPU_ZONE(m_profiler, command, "Imgui Pass");
@@ -287,6 +169,9 @@ void Renderer::RenderImGUI(Swift::ICommand* command, Swift::ITexture* render_tar
 void Renderer::ClearTextures(Swift::ICommand* command) const
 {
     GPU_ZONE(m_profiler, command, "Clear Textures")
+    auto* render_target = m_context->GetCurrentRenderTarget();
+    command->TransitionImage(render_target->GetTexture(), Swift::ResourceState::eRenderTarget);
+    command->ClearRenderTarget(render_target, {});
     command->TransitionImage(m_render_texture.texture, Swift::ResourceState::eRenderTarget);
     command->ClearRenderTarget(m_render_texture.render_target, {});
     command->TransitionImage(m_depth_texture.texture, Swift::ResourceState::eDepthWrite);
@@ -333,23 +218,11 @@ void Renderer::Update()
     DrawVolumetricFog(command);
     DrawTonemapPass(command);
 
-    ImGui::Begin("Debugging");
-    UpdateLightsDialog(camera);
-    UpdateGrassDialog();
-    UpdateFogDialog();
-
-    if (ImGui::CollapsingHeader("Tonemap Pass"))
-    {
-        ImGui::DragFloat("Exposure", &m_tonemap_pass.exposure);
-    }
-
-    ImGui::End();
+    const auto render_image_descriptor =
+        static_cast<Swift::D3D12::TextureSRV*>(m_post_process_ldr.m_dst_texture.srv)->GetDescriptorData().gpu_handle.ptr;
+    m_engine->GetEditor().Render(&render_image_descriptor);
 
     auto* render_target_texture = m_context->GetCurrentSwapchainTexture();
-    command->TransitionImage(m_post_process_ldr.m_dst_texture.texture, Swift::ResourceState::eCopySource);
-    command->TransitionImage(render_target_texture, Swift::ResourceState::eCopyDest);
-    command->CopyImageToImage(m_post_process_ldr.m_dst_texture.texture, render_target_texture);
-
     RenderImGUI(command, render_target_texture);
 
     command->TransitionImage(render_target_texture, Swift::ResourceState::ePresent);

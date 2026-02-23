@@ -12,7 +12,7 @@ PostApocalyptic::PostApocalyptic(Engine *engine) : m_engine(engine)
     };
     dir_light.SetDirectionEuler(glm::vec3(-20.0f, 135.0f, 0.0f));
     m_engine->GetRenderer().AddDirectionalLight(dir_light);
-    m_engine->GetResources().LoadModel("assets/cathedral/cathedral.gltf", glm::vec3(1.f));
+    m_engine->GetResources().LoadModel("assets/cathedral/cathedral.gltf", glm::vec3(0), glm::vec3(1.f));
     m_engine->GetRenderer().GenerateStaticShadowMap();
 }
 
