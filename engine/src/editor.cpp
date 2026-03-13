@@ -15,7 +15,7 @@ void Editor::Render(const uint64_t* image_handle)
     {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ModelPayload"))
         {
-            const auto model_location = (const char*)payload->Data;
+            const auto* const model_location = (const char*)payload->Data;
 
             const auto& camera = m_engine->GetCamera();
             const auto transform = camera.m_position + camera.GetForwardVector();
@@ -124,11 +124,12 @@ void Editor::UpdateRenderSettings()
     if (m_rebuild_lights)
     {
         constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
-                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                                           ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar;
+                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
+                                           ImGuiWindowFlags_NoScrollbar;
 
         ImGuiIO& io = ImGui::GetIO();
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 10, 10), ImGuiCond_Always, ImVec2(1, 0));
+        ImGui::SetNextWindowFocus();
 
         ImGui::Begin("##rebuild_alert", nullptr, flags);
 

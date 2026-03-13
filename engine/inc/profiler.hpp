@@ -1,5 +1,6 @@
 #pragma once
 #define TRACY_CALLSTACK 8
+#include "directx/d3d12.h"
 #include "tracy/TracyD3D12.hpp"
 
 class GPUProfiler

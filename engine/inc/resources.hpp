@@ -107,7 +107,7 @@ private:
                                                 std::span<const uint8_t> meshlet_triangles);
 
     static void LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
-    static Texture LoadTexture(const fastgltf::Asset& asset, const fastgltf::Texture& texture);
+    static Texture LoadTexture(const std::string& base_path, const fastgltf::Asset& asset, const fastgltf::Texture& texture);
     static uint32_t PackCone(const meshopt_Bounds& bounds);
 
     static Swift::Filter ToFilter(std::optional<fastgltf::Filter> filter);

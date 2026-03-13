@@ -38,3 +38,4 @@ compile_commands.json
 
 *.dwo
 /engine/extern/slangc/slang-glsl-module.bin
+/assets/bistro/

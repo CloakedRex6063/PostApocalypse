@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 #include "engine.hpp"
 #include "imgui.h"
+#include "directx/d3d12.h"
 #include "imgui_impl_dx12.h"
 #include "shader_data.hpp"
 #include "imgui_impl_glfw.h"
@@ -113,9 +114,9 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
 {
     CPU_ZONE("Update Constant Buffer")
     constexpr float near_plane = 1.0f;
-    constexpr float far_plane = 400.f;
-    const glm::mat4 sun_proj = glm::orthoRH_ZO(-150.0f, 150.0f, -150.f, 150.0f, near_plane, far_plane);
-    constexpr float sun_distance = 75.f;
+    constexpr float far_plane = 1200.f;
+    const glm::mat4 sun_proj = glm::orthoRH_ZO(-500.0f, 500.0f, -500.f, 500.0f, near_plane, far_plane);
+    constexpr float sun_distance = 150.f;
     const glm::vec3 sun_pos = -glm::normalize(m_dir_lights[0].direction) * sun_distance;
     const auto sun_view = glm::lookAtRH(sun_pos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
@@ -354,6 +355,23 @@ void Renderer::InitBuffers()
     m_material_buffer = BufferViewBuilder(m_context, sizeof(Material) * 10'000).SetNumElements(10'000).Build();
     m_cull_data_buffer = BufferViewBuilder(m_context, sizeof(CullData) * 1'000'000).SetNumElements(1'000'000).Build();
     m_frustum_buffer = BufferViewBuilder(m_context, sizeof(Frustum)).SetNumElements(1).Build();
+
+    Material default_material{
+        .albedo = glm::vec4(1.0f),
+        .emissive = glm::vec3(0.0f),
+
+        .metallic = 1.0f,
+        .roughness = 1.0f,
+
+        .alpha_cutoff = 0.5f,
+        .alpha_mode = Swift::AlphaMode::eOpaque,
+    };
+    default_material.albedo_index = m_dummy_white_texture.GetSRVDescriptorIndex();
+    default_material.metal_rough_index = m_dummy_white_texture.GetSRVDescriptorIndex();
+    default_material.occlusion_index = m_dummy_white_texture.GetSRVDescriptorIndex();
+    default_material.emissive_index = m_dummy_black_texture.GetSRVDescriptorIndex();
+    default_material.normal_index = m_dummy_normal_texture.GetSRVDescriptorIndex();
+    m_material_buffer.Write(&default_material, 0, sizeof(Material));
 }
 
 void Renderer::InitDepthPrepass()
@@ -397,14 +415,14 @@ void Renderer::InitShadowPass()
 void Renderer::InitSSAOPass()
 {
     m_ssao_pass.gen_shader = Swift::GraphicsShaderBuilder(m_context)
-                                 .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                 .SetRTVFormats({ Swift::Format::eR8_UNORM })
                                  .SetMeshShader(ssao_mesh_main_code)
                                  .SetPixelShader(ssao_pixel_main_code)
                                  .SetPolygonMode(Swift::PolygonMode::eTriangle)
                                  .SetName("SSAO Shader")
                                  .Build();
     m_ssao_pass.blur_shader = Swift::GraphicsShaderBuilder(m_context)
-                                  .SetRTVFormats({ Swift::Format::eRGBA8_UNORM })
+                                  .SetRTVFormats({ Swift::Format::eR8_UNORM })
                                   .SetMeshShader(ssao_blur_mesh_main_code)
                                   .SetPixelShader(ssao_blur_pixel_main_code)
                                   .SetPolygonMode(Swift::PolygonMode::eTriangle)
@@ -595,50 +613,21 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
 
     for (auto& material : model.materials)
     {
-        if (material.albedo_index != -1)
+        auto ResolveTexture = [&](const int index, const uint32_t fallback_srv)
         {
-            material.albedo_index = m_textures[texture_offset + material.albedo_index].GetSRVDescriptorIndex();
-        }
-        else
-        {
-            material.albedo_index = m_dummy_white_texture.GetSRVDescriptorIndex();
-        }
+            if (index != -1) return m_textures[texture_offset + index].GetSRVDescriptorIndex();
+            return fallback_srv;
+        };
 
-        if (material.metal_rough_index != -1)
-        {
-            material.metal_rough_index = m_textures[texture_offset + material.metal_rough_index].GetSRVDescriptorIndex();
-        }
-        else
-        {
-            material.metal_rough_index = m_dummy_white_texture.GetSRVDescriptorIndex();
-        }
+        material.albedo_index = ResolveTexture(material.albedo_index, m_dummy_white_texture.GetSRVDescriptorIndex());
 
-        if (material.occlusion_index != -1)
-        {
-            material.occlusion_index = m_textures[texture_offset + material.occlusion_index].GetSRVDescriptorIndex();
-        }
-        else
-        {
-            material.occlusion_index = m_dummy_white_texture.GetSRVDescriptorIndex();
-        }
+        material.metal_rough_index = ResolveTexture(material.metal_rough_index, m_dummy_white_texture.GetSRVDescriptorIndex());
 
-        if (material.emissive_index != -1)
-        {
-            material.emissive_index = m_textures[texture_offset + material.emissive_index].GetSRVDescriptorIndex();
-        }
-        else
-        {
-            material.emissive_index = m_dummy_black_texture.GetSRVDescriptorIndex();
-        }
+        material.occlusion_index = ResolveTexture(material.occlusion_index, m_dummy_white_texture.GetSRVDescriptorIndex());
 
-        if (material.normal_index != -1)
-        {
-            material.normal_index = m_textures[texture_offset + material.normal_index].GetSRVDescriptorIndex();
-        }
-        else
-        {
-            material.normal_index = m_dummy_normal_texture.GetSRVDescriptorIndex();
-        }
+        material.emissive_index = ResolveTexture(material.emissive_index, m_dummy_black_texture.GetSRVDescriptorIndex());
+
+        material.normal_index = ResolveTexture(material.normal_index, m_dummy_normal_texture.GetSRVDescriptorIndex());
     }
 
     std::vector<MeshRenderer> renderers;
@@ -651,8 +640,12 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
         const auto transform_index = static_cast<uint32_t>(m_transforms.size());
         auto final_transform = transform * model.transforms[node.transform_index];
         m_transforms.emplace_back(final_transform);
-        const auto material_index = static_cast<int>(m_materials.size());
-        m_materials.emplace_back(model.materials[mesh.material_index]);
+        int material_index = 0;
+        if (mesh.material_index != -1)
+        {
+            material_index = static_cast<int>(m_materials.size());
+            m_materials.emplace_back(model.materials[mesh.material_index]);
+        }
         renderers.push_back({
             .m_vertex_buffer = vertex_buffer,
             .m_mesh_buffer = meshlet_buffer,
@@ -765,6 +758,7 @@ void Renderer::DrawSSAOPass(Swift::ICommand* command) const
     command->TransitionImage(m_depth_texture.texture, Swift::ResourceState::eDepthRead);
     command->TransitionImage(m_ssao_pass.gen_texture.texture, Swift::ResourceState::eRenderTarget);
     command->TransitionImage(m_ssao_pass.noise_texture.texture, Swift::ResourceState::eShaderResource);
+    command->ClearRenderTarget(m_ssao_pass.gen_texture.render_target, {});
     command->SetViewport(Swift::Viewport{ .dimensions = float_size });
     command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
     command->BindShader(m_ssao_pass.gen_shader);
@@ -794,6 +788,7 @@ void Renderer::DrawSSAOPass(Swift::ICommand* command) const
     command->TransitionImage(m_ssao_pass.gen_texture.texture, Swift::ResourceState::eShaderResource);
     command->BindShader(m_ssao_pass.blur_shader);
     command->BindRenderTargets(m_ssao_pass.blur_texture.render_target, nullptr);
+    command->ClearRenderTarget(m_ssao_pass.blur_texture.render_target, {});
     const struct BlurPushConstant
     {
         uint32_t ssao_texture_index;

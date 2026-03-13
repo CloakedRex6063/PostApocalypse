@@ -100,6 +100,14 @@ std::tuple<std::vector<meshopt_Meshlet>, std::vector<uint32_t>, std::vector<uint
                                                      124,
                                                      0.f);
     const auto& [vertex_offset, triangle_offset, vertex_count, triangle_count] = meshlets[meshlet_count - 1];
+    for (size_t i = 0; i < meshlet_count; i++)
+    {
+        meshopt_optimizeMeshlet(
+            &mesh_vertices[meshlets[i].vertex_offset],
+            &mesh_triangles[meshlets[i].triangle_offset],
+            meshlets[i].triangle_count,
+            meshlets[i].vertex_count);
+    }
     mesh_vertices.resize(vertex_offset + vertex_count);
     mesh_triangles.resize(triangle_offset + (triangle_count * 3 + 3 & ~3));
     meshlets.resize(meshlet_count);
@@ -146,7 +154,7 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
         .m_getPosition =
             [](const SMikkTSpaceContext* ctx, float out[], int faceIdx, int vertIdx)
         {
-            const auto pair = static_cast<Pair*>(ctx->m_pUserData);
+            auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
             int idx = pair->indices[faceIdx * 3 + vertIdx];
             out[0] = pair->vertices[idx].position[0];
             out[1] = pair->vertices[idx].position[1];
@@ -155,7 +163,7 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
         .m_getNormal =
             [](const SMikkTSpaceContext* ctx, float out[], int faceIdx, int vertIdx)
         {
-            const auto pair = static_cast<Pair*>(ctx->m_pUserData);
+            auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
             int idx = pair->indices[faceIdx * 3 + vertIdx];
             out[0] = pair->vertices[idx].normal[0];
             out[1] = pair->vertices[idx].normal[1];
@@ -164,7 +172,7 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
         .m_getTexCoord =
             [](const SMikkTSpaceContext* ctx, float out[], int faceIdx, int vertIdx)
         {
-            const auto pair = static_cast<Pair*>(ctx->m_pUserData);
+            auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
             int idx = pair->indices[faceIdx * 3 + vertIdx];
             out[0] = pair->vertices[idx].uv_x;
             out[1] = pair->vertices[idx].uv_y;
@@ -172,7 +180,7 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
         .m_setTSpaceBasic = static_cast<decltype(SMikkTSpaceInterface::m_setTSpaceBasic)>(
             [](const SMikkTSpaceContext* ctx, const float tangent[], const float sign, const int faceIdx, const int vertIdx)
             {
-                const auto pair = static_cast<Pair*>(ctx->m_pUserData);
+                auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
                 const int idx = pair->indices[faceIdx * 3 + vertIdx];
                 pair->vertices[idx].tangent = { tangent[0], tangent[1], tangent[2], sign };
             })
@@ -185,12 +193,10 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
     genTangSpaceDefault(&context);
 }
 
-Texture Resources::LoadTexture(const fastgltf::Asset& asset, const fastgltf::Texture& texture)
+Texture Resources::LoadTexture(const std::string& base_path, const fastgltf::Asset& asset, const fastgltf::Texture& texture)
 {
-    const bool isDDS = texture.ddsImageIndex.has_value();
+    bool isDDS = texture.ddsImageIndex.has_value();
     const auto& image = isDDS ? asset.images[texture.ddsImageIndex.value()] : asset.images[texture.imageIndex.value()];
-
-    // Get image data
     std::vector<uint8_t> pixels;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -251,9 +257,13 @@ Texture Resources::LoadTexture(const fastgltf::Asset& asset, const fastgltf::Tex
                            },
                            [&](const fastgltf::sources::URI& uri)
                            {
-                               const std::string path = uri.uri.fspath().string();
+                               std::filesystem::path texture_path = base_path / uri.uri.fspath();
+                               texture_path = std::filesystem::weakly_canonical(texture_path);
+                               const std::string path = texture_path.string();
                                std::string ext = uri.uri.fspath().extension().string();
                                std::ranges::transform(ext, ext.begin(), ::tolower);
+
+                               isDDS |= (ext == ".dds");
 
                                if (isDDS)
                                {
@@ -271,6 +281,7 @@ Texture Resources::LoadTexture(const fastgltf::Asset& asset, const fastgltf::Tex
                                    height = header.height();
                                    mip_levels = header.mip_levels();
                                    array_size = header.array_size();
+                                   format = FromDXGIFormat(header.format());
                                }
                                else
                                {
@@ -434,7 +445,7 @@ std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path, c
         return nullptr;
     }
 
-    constexpr auto gltfOptions = fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages;
+    constexpr auto gltfOptions = fastgltf::Options::LoadExternalBuffers;
 
     auto asset = parser.loadGltf(data.get(), std::filesystem::path(path).parent_path(), gltfOptions);
     if (asset.error() != fastgltf::Error::None)
@@ -457,7 +468,7 @@ std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path, c
 
     for (auto& texture : asset->textures)
     {
-        auto tex = LoadTexture(asset.get(), texture);
+        auto tex = LoadTexture(std::filesystem::path(path).parent_path().string(), asset.get(), texture);
         m.textures.emplace_back(tex);
     }
 
