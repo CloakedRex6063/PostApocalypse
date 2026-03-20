@@ -11,6 +11,7 @@ public:
     template<IsActor T>
     std::shared_ptr<Actor> AddActor();
     void Update(float dt) const;
+    [[nodiscard]] std::vector<std::shared_ptr<Actor>>& GetActors() { return m_actors; }
 
 private:
     Engine* m_engine;

@@ -16,7 +16,7 @@ private:
 class Editor
 {
 public:
-    Editor(Engine* engine) : m_engine(engine) {}
+    explicit Editor(Engine* engine) : m_engine(engine) {}
     void Render(const uint64_t* image_handle);
 
 private:

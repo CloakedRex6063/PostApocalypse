@@ -18,6 +18,10 @@ public:
     ~Actor() {}
     void Update(float dt) {}
     void AddModel(Model& model);
+    [[nodiscard]] Transform GetTransform() const { return m_transform; }
+    [[nodiscard]] glm::vec3 GetPosition() const { return m_transform.position; }
+    [[nodiscard]] glm::vec3 GetRotation() const { return m_transform.rotation; }
+    [[nodiscard]] glm::vec3 GetScale() const { return m_transform.scale; }
 
 private:
     Transform m_transform;

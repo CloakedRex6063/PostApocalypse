@@ -1,6 +1,7 @@
 #pragma once
 #include "camera.hpp"
 #include "resources.hpp"
+#include "render_graph/swift_render_graph.hpp"
 
 class GPUProfiler;
 class Engine;
@@ -8,10 +9,10 @@ class Engine;
 struct TextureView
 {
     Swift::ITexture* texture;
-    Swift::ITextureSRV* srv;
-    Swift::ITextureUAV* uav;
-    Swift::IRenderTarget* render_target;
-    Swift::IDepthStencil* depth_stencil;
+    Swift::ITextureView* srv;
+    Swift::ITextureView* uav;
+    Swift::ITextureView* render_target;
+    Swift::ITextureView* depth_stencil;
 
     uint32_t GetSRVDescriptorIndex() const { return srv->GetDescriptorIndex(); }
 
@@ -23,19 +24,19 @@ struct TextureView
         }
         if (srv)
         {
-            context->DestroyShaderResource(srv);
+            context->DestroyTextureView(srv);
         }
         if (render_target)
         {
-            context->DestroyRenderTarget(render_target);
+            context->DestroyTextureView(render_target);
         }
         if (depth_stencil)
         {
-            context->DestroyDepthStencil(depth_stencil);
+            context->DestroyTextureView(depth_stencil);
         }
         if (uav)
         {
-            context->DestroyUnorderedAccessView(uav);
+            context->DestroyTextureView(uav);
         }
     }
 };
@@ -102,19 +103,31 @@ public:
         texture_view.texture = m_texture_builder.Build();
         if (build_info.flags & Swift::TextureFlags::eRenderTarget)
         {
-            texture_view.render_target = m_context->CreateRenderTarget(texture_view.texture);
+            texture_view.render_target = m_context->CreateTextureView(texture_view.texture,
+                                                                      Swift::TextureViewCreateInfo{
+                                                                          .type = Swift::TextureViewType::eRenderTarget,
+                                                                      });
         }
         if (build_info.flags & Swift::TextureFlags::eDepthStencil)
         {
-            texture_view.depth_stencil = m_context->CreateDepthStencil(texture_view.texture);
+            texture_view.depth_stencil = m_context->CreateTextureView(texture_view.texture,
+                                                                      Swift::TextureViewCreateInfo{
+                                                                          .type = Swift::TextureViewType::eDepthStencil,
+                                                                      });
         }
         if (build_info.flags & Swift::TextureFlags::eShaderResource)
         {
-            texture_view.srv = m_context->CreateShaderResource(texture_view.texture);
+            texture_view.srv = m_context->CreateTextureView(texture_view.texture,
+                                                            Swift::TextureViewCreateInfo{
+                                                                .type = Swift::TextureViewType::eShaderResource,
+                                                            });
         }
         if (build_info.flags & Swift::TextureFlags::eUnorderedAccess)
         {
-            texture_view.uav = m_context->CreateUnorderedAccessView(texture_view.texture);
+            texture_view.uav = m_context->CreateTextureView(texture_view.texture,
+                                                            Swift::TextureViewCreateInfo{
+                                                                .type = Swift::TextureViewType::eUnorderedAccess,
+                                                            });
         }
         return texture_view;
     }
@@ -127,9 +140,11 @@ private:
 struct BufferView
 {
     Swift::IBuffer* buffer;
-    Swift::IBufferSRV* srv;
+    Swift::IBufferView* srv;
+    Swift::IBufferView* uav;
 
     uint32_t GetDescriptorIndex() const { return srv->GetDescriptorIndex(); }
+    uint32_t GetUAVDescriptorIndex() const { return uav->GetDescriptorIndex(); }
 
     void Write(const void* data, const uint32_t offset, const uint32_t size, const bool one_time = false) const
     {
@@ -144,7 +159,7 @@ struct BufferView
         }
         if (srv)
         {
-            context->DestroyShaderResource(srv);
+            context->DestroyBufferView(srv);
         }
     }
 };
@@ -153,6 +168,12 @@ class BufferViewBuilder
 {
 public:
     BufferViewBuilder(Swift::IContext* context, const uint32_t size) : m_context(context), m_builder(context, size) {}
+
+    BufferViewBuilder& EnableUAV()
+    {
+        m_build_uav = true;
+        return *this;
+    }
 
     BufferViewBuilder& SetData(const void* data)
     {
@@ -184,13 +205,21 @@ public:
         buffer_view.buffer = m_builder.Build();
         if (m_num_elements)
         {
-            buffer_view.srv =
-                m_context->CreateShaderResource(buffer_view.buffer,
-                                                Swift::BufferSRVCreateInfo{
-                                                    .num_elements = m_num_elements,
-                                                    .element_size = m_builder.GetBuildInfo().size / m_num_elements,
-                                                    .first_element = 0,
-                                                });
+            buffer_view.srv = m_context->CreateBufferView(buffer_view.buffer,
+                                                          Swift::BufferViewCreateInfo{
+                                                              .num_elements = m_num_elements,
+                                                              .element_size = m_builder.GetBuildInfo().size / m_num_elements,
+                                                          });
+
+            if (m_build_uav)
+            {
+                buffer_view.uav = m_context->CreateBufferView(buffer_view.buffer,
+                                              Swift::BufferViewCreateInfo{
+                                                  .type = Swift::BufferViewType::eUnorderedAccess,
+                                                  .num_elements = m_num_elements,
+                                                  .element_size = m_builder.GetBuildInfo().size / m_num_elements,
+                                              });
+            }
         }
         return buffer_view;
     }
@@ -198,12 +227,14 @@ public:
 private:
     Swift::IContext* m_context;
     Swift::BufferBuilder m_builder;
+    bool m_build_uav = false;
     uint32_t m_num_elements = 0;
 };
 
 struct MeshRenderer
 {
-    BufferView m_vertex_buffer;
+    BufferView m_position_buffer;
+    BufferView m_attrib_buffer;
     BufferView m_mesh_buffer;
     BufferView m_mesh_vertex_buffer;
     BufferView m_mesh_triangle_buffer;
@@ -325,7 +356,7 @@ public:
     explicit Renderer(Engine* engine);
     ~Renderer();
     void UpdateGlobalConstantBuffer(const Camera& camera) const;
-    void RenderImGUI(Swift::ICommand* command, Swift::ITexture* render_target_texture) const;
+    void RenderImGUI(Swift::ICommand* command) const;
     void ClearTextures(Swift::ICommand* command) const;
     static void ImGUINewFrame();
 
@@ -337,19 +368,20 @@ public:
         {
             m_context->GetGraphicsQueue()->WaitIdle();
             m_context->DestroyTexture(m_skybox_pass.texture.texture);
-            m_context->DestroyShaderResource(m_skybox_pass.texture.srv);
+            m_context->DestroyTextureView(m_skybox_pass.texture.srv);
         }
         m_skybox_pass.texture.texture = texture;
-        m_skybox_pass.texture.srv = m_context->CreateShaderResource(m_skybox_pass.texture.texture);
+        m_skybox_pass.texture.srv =
+            m_context->CreateTextureView(m_skybox_pass.texture.texture, { .type = Swift::TextureViewType::eShaderResource });
 
         if (m_specular_ibl_texture.texture)
         {
             m_context->GetGraphicsQueue()->WaitIdle();
             m_context->DestroyTexture(m_specular_ibl_texture.texture);
-            m_context->DestroyShaderResource(m_specular_ibl_texture.srv);
+            m_context->DestroyTextureView(m_specular_ibl_texture.srv);
         }
         m_specular_ibl_texture.texture = ibl_texture;
-        m_specular_ibl_texture.srv = m_context->CreateShaderResource(m_specular_ibl_texture.texture);
+        m_specular_ibl_texture.srv = m_context->CreateTextureView(m_specular_ibl_texture.texture, { .type = Swift::TextureViewType::eShaderResource });
     }
 
     std::tuple<uint32_t, uint32_t> AddRenderables(Model& model, const glm::mat4& transform)
@@ -379,7 +411,7 @@ public:
         m_dir_light_buffer.buffer->Write(&m_dir_lights.back(), 0, sizeof(DirectionalLight) * m_dir_lights.size());
     }
 
-    void GenerateStaticShadowMap() const;
+    void GenerateStaticShadowMap();
 
     std::span<PointLight> GetPointLights() { return m_point_lights; }
     std::span<DirectionalLight> GetDirectionalLights() { return m_dir_lights; }
@@ -406,21 +438,22 @@ private:
     void InitGeometryShader();
     void InitBloomPass();
     void InitTonemapPass();
-    void DrawDepthPrePass(Swift::ICommand* command) const;
-    void DrawGeometry(Swift::ICommand* command) const;
-    void DrawSSAOPass(Swift::ICommand* command) const;
-    void DrawSkybox(Swift::ICommand* command) const;
-    void DrawShadowPass(Swift::ICommand* command) const;
-    void DrawGrassPass(Swift::ICommand* command) const;
-    void DrawBloomPass(Swift::ICommand* command);
-    void DrawVolumetricFog(Swift::ICommand* command);
-    void DrawTonemapPass(Swift::ICommand* command);
+    void DrawDepthPrePass();
+    void DrawGeometry();
+    void DrawSSAOPass();
+    void DrawSkybox();
+    void DrawShadowPass(Swift::ICommand* shadow_command = nullptr);
+    void DrawGrassPass();
+    void DrawBloomPass();
+    void DrawVolumetricFog();
+    void DrawTonemapPass();
     void InitImgui() const;
 
     std::tuple<uint32_t, uint32_t> CreateMeshRenderers(Model& model, const glm::mat4& transform);
 
     std::unique_ptr<GPUProfiler> m_profiler;
 
+    Swift::RG::RenderGraph m_render_graph;
     DepthPrePass m_depth_prepass;
     SkyboxPass m_skybox_pass;
     SSAOPass m_ssao_pass;

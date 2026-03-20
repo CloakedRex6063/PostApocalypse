@@ -6,6 +6,7 @@
 #include "shader_data.hpp"
 #include "imgui_impl_glfw.h"
 #include "profiler.hpp"
+#include "d3d12/d3d12_texture_view.hpp"
 #include "d3d12/d3d12_context.hpp"
 
 void MeshRenderer::Draw(Swift::ICommand* command, const bool dispatch_amp) const
@@ -103,6 +104,7 @@ Renderer::Renderer(Engine* engine) : m_engine(engine)
 
 Renderer::~Renderer()
 {
+    m_context->GetGraphicsQueue()->WaitIdle();
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -158,14 +160,15 @@ void Renderer::UpdateGlobalConstantBuffer(const Camera& camera) const
     m_global_constant_buffers[current_index].Write(&info, 0, sizeof(GlobalConstantInfo));
 }
 
-void Renderer::RenderImGUI(Swift::ICommand* command, Swift::ITexture* render_target_texture) const
+void Renderer::RenderImGUI(Swift::ICommand* command) const
 {
     GPU_ZONE(m_profiler, command, "Imgui Pass");
     auto* render_target = m_context->GetCurrentRenderTarget();
-    command->TransitionImage(render_target_texture, Swift::ResourceState::eRenderTarget);
-    command->BindRenderTargets(render_target, m_depth_texture.depth_stencil);
+    Swift::RenderAttachmentInfo color_attachment_info{ .render_target = render_target, .load_op = Swift::LoadOp::eLoad };
+    command->BeginRender(color_attachment_info, std::nullopt);
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), static_cast<ID3D12GraphicsCommandList*>(command->GetCommandList()));
+    command->EndRender();
 }
 void Renderer::ClearTextures(Swift::ICommand* command) const
 {
@@ -187,15 +190,23 @@ void Renderer::ImGUINewFrame()
 void Renderer::Update()
 {
     CPU_ZONE("Rendering Loop");
-    auto* command = m_context->GetCurrentCommand();
+    m_context->NewFrame();
 
+    auto* command = m_context->GetCurrentCommand();
     auto& camera = m_engine->GetCamera();
+
+    m_render_graph.NewFrame(command);
 
     UpdateGlobalConstantBuffer(camera);
 
     {
         CPU_ZONE("Update Frustum Buffer")
         const auto frustum = camera.CreateFrustum();
+
+        auto vp = camera.m_proj_matrix * camera.m_view_matrix;
+        for(int i = 0; i < 4; i++)
+            std::println("vp[{}]: {}, {}, {}, {}", i, vp[i].x, vp[i].y, vp[i].z, vp[i].w);
+
         m_frustum_buffer.Write(&frustum, 0, sizeof(Frustum));
     }
 
@@ -210,21 +221,23 @@ void Renderer::Update()
 
     ClearTextures(command);
 
-    DrawDepthPrePass(command);
-    DrawSSAOPass(command);
-    DrawGeometry(command);
-    DrawGrassPass(command);
-    DrawSkybox(command);
-    DrawBloomPass(command);
-    DrawVolumetricFog(command);
-    DrawTonemapPass(command);
+    DrawDepthPrePass();
+    DrawSSAOPass();
+    DrawGeometry();
+    DrawGrassPass();
+    DrawSkybox();
+    DrawBloomPass();
+    DrawVolumetricFog();
+    DrawTonemapPass();
+
+    m_render_graph.Execute();
 
     const auto render_image_descriptor =
-        static_cast<Swift::D3D12::TextureSRV*>(m_post_process_ldr.m_dst_texture.srv)->GetDescriptorData().gpu_handle.ptr;
+        static_cast<Swift::D3D12::TextureView*>(m_post_process_ldr.m_dst_texture.srv)->GetDescriptorData().gpu_handle.ptr;
     m_engine->GetEditor().Render(&render_image_descriptor);
 
     auto* render_target_texture = m_context->GetCurrentSwapchainTexture();
-    RenderImGUI(command, render_target_texture);
+    RenderImGUI(command);
 
     command->TransitionImage(render_target_texture, Swift::ResourceState::ePresent);
     command->End();
@@ -235,26 +248,28 @@ void Renderer::Update()
     }
 }
 
-void Renderer::GenerateStaticShadowMap() const
+void Renderer::GenerateStaticShadowMap()
 {
     auto& camera = m_engine->GetCamera();
     UpdateGlobalConstantBuffer(camera);
     m_context->GetGraphicsQueue()->WaitIdle();
-    const auto command = m_context->CreateCommand(Swift::QueueType::eGraphics);
+    const auto command = m_context->CreateCommand(m_context->GetGraphicsQueue());
+    m_render_graph.NewFrame(command);
     command->Begin();
     const auto current_index = m_context->GetFrameIndex();
     command->BindConstantBuffer(m_global_constant_buffers[current_index].buffer, 1);
     DrawShadowPass(command);
+    m_render_graph.Execute();
     command->End();
     const auto fence_value = m_context->GetGraphicsQueue()->Execute(command);
     m_context->GetGraphicsQueue()->Wait(fence_value);
+    m_context->DestroyCommand(command);
 }
 
 void Renderer::InitContext()
 {
     const auto size = m_engine->GetWindow().GetSize();
     m_context = Swift::CreateContext({
-        .backend_type = Swift::BackendType::eD3D12,
         .width = size.x,
         .height = size.y,
         .native_window_handle = m_engine->GetWindow().GetNativeWindow(),
@@ -378,11 +393,12 @@ void Renderer::InitDepthPrepass()
 {
     m_depth_prepass.shader = Swift::GraphicsShaderBuilder(m_context)
                                  .SetDSVFormat(Swift::Format::eD32F)
+                                 .SetAmplificationShader(depth_prepass_ampl_main_code)
                                  .SetMeshShader(depth_prepass_mesh_main_code)
                                  .SetPixelShader(depth_prepass_pixel_main_code)
                                  .SetDepthTestEnable(true)
                                  .SetDepthWriteEnable(true)
-                                 .SetDepthTest(Swift::DepthTest::eLess)
+                                 .SetDepthTest(Swift::ComparisonFunc::eLess)
                                  .SetPolygonMode(Swift::PolygonMode::eTriangle)
                                  .SetName("Depth Prepass Shader")
                                  .Build();
@@ -406,7 +422,7 @@ void Renderer::InitShadowPass()
                                .SetDepthBiasClamp(0.005f)
                                .SetSlopeScaledDepthBias(0.5f)
                                .SetCullMode(Swift::CullMode::eFront)
-                               .SetDepthTest(Swift::DepthTest::eLess)
+                               .SetDepthTest(Swift::ComparisonFunc::eLess)
                                .SetPolygonMode(Swift::PolygonMode::eTriangle)
                                .SetName("Shadow Shader")
                                .Build();
@@ -467,11 +483,10 @@ void Renderer::InitSkyboxShader()
                                .SetDSVFormat(Swift::Format::eD32F)
                                .SetMeshShader(skybox_mesh_main_code)
                                .SetPixelShader(skybox_pixel_main_code)
-                               .SetDepthTest(Swift::DepthTest::eGreaterEqual)
+                               .SetDepthTest(Swift::ComparisonFunc::eLessEqual)
                                .SetDepthTestEnable(true)
                                .SetDepthWriteEnable(true)
                                .SetCullMode(Swift::CullMode::eNone)
-                               .SetDepthTest(Swift::DepthTest::eLessEqual)
                                .SetPolygonMode(Swift::PolygonMode::eTriangle)
                                .SetName("Skybox Shader")
                                .Build();
@@ -492,7 +507,7 @@ void Renderer::InitGrassPass()
                               .SetCullMode(Swift::CullMode::eNone)
                               .SetDepthTestEnable(true)
                               .SetDepthWriteEnable(true)
-                              .SetDepthTest(Swift::DepthTest::eLess)
+                              .SetDepthTest(Swift::ComparisonFunc::eLess)
                               .SetPolygonMode(Swift::PolygonMode::eTriangle)
                               .SetName("Grass Shader")
                               .Build();
@@ -518,8 +533,8 @@ void Renderer::InitGeometryShader()
                        .SetMeshShader(model_mesh_main_code)
                        .SetPixelShader(model_pixel_main_code)
                        .SetDepthTestEnable(true)
-                       .SetDepthWriteEnable(true)
-                       .SetDepthTest(Swift::DepthTest::eEqual)
+                       .SetDepthWriteEnable(false)
+                       .SetDepthTest(Swift::ComparisonFunc::eEqual)
                        .SetPolygonMode(Swift::PolygonMode::eTriangle)
                        .SetName("PBR Shader")
                        .Build();
@@ -565,7 +580,8 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
 {
     struct MeshBuffers
     {
-        BufferView vertex_buffer;
+        BufferView position_buffer;
+        BufferView attrib_buffer;
         BufferView meshlet_buffer;
         BufferView meshlet_vertex_buffer;
         BufferView meshlet_tris_buffer;
@@ -577,9 +593,13 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
     for (const auto& mesh : model.meshes)
     {
         MeshBuffers mesh_buffer;
-        mesh_buffer.vertex_buffer = BufferViewBuilder(m_context, sizeof(Vertex) * mesh.vertices.size())
-                                        .SetData(mesh.vertices.data())
-                                        .SetNumElements(mesh.vertices.size())
+        mesh_buffer.position_buffer = BufferViewBuilder(m_context, sizeof(glm::vec3) * mesh.positions.size())
+                                          .SetData(mesh.positions.data())
+                                          .SetNumElements(mesh.positions.size())
+                                          .Build();
+        mesh_buffer.attrib_buffer = BufferViewBuilder(m_context, sizeof(Vertex) * mesh.vertex_attribs.size())
+                                        .SetData(mesh.vertex_attribs.data())
+                                        .SetNumElements(mesh.vertex_attribs.size())
                                         .Build();
         mesh_buffer.meshlet_buffer = BufferViewBuilder(m_context, sizeof(meshopt_Meshlet) * mesh.meshlets.size())
                                          .SetData(mesh.meshlets.data())
@@ -607,7 +627,7 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
                       .SetName(texture.name)
                       .Build();
 
-        auto* srv = m_context->CreateShaderResource(t);
+        auto* srv = m_context->CreateTextureView(t, { .type = Swift::TextureViewType::eShaderResource });
         m_textures.emplace_back(TextureView{ t, srv });
     }
 
@@ -636,7 +656,8 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
     for (const auto& node : model.nodes)
     {
         const auto& mesh = model.meshes[node.mesh_index];
-        const auto& [vertex_buffer, meshlet_buffer, meshlet_vertex_buffer, meshlet_tris_buffer] = mesh_buffers[node.mesh_index];
+        const auto& [pos_buffer, vertex_buffer, meshlet_buffer, meshlet_vertex_buffer, meshlet_tris_buffer] =
+            mesh_buffers[node.mesh_index];
         const auto transform_index = static_cast<uint32_t>(m_transforms.size());
         auto final_transform = transform * model.transforms[node.transform_index];
         m_transforms.emplace_back(final_transform);
@@ -647,7 +668,8 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
             m_materials.emplace_back(model.materials[mesh.material_index]);
         }
         renderers.push_back({
-            .m_vertex_buffer = vertex_buffer,
+            .m_position_buffer = pos_buffer,
+            .m_attrib_buffer = vertex_buffer,
             .m_mesh_buffer = meshlet_buffer,
             .m_mesh_vertex_buffer = meshlet_vertex_buffer,
             .m_mesh_triangle_buffer = meshlet_tris_buffer,
@@ -666,359 +688,394 @@ std::tuple<uint32_t, uint32_t> Renderer::CreateMeshRenderers(Model& model, const
     return { offset, size };
 }
 
-void Renderer::DrawDepthPrePass(Swift::ICommand* command) const
+void Renderer::DrawDepthPrePass()
 {
     CPU_ZONE("Depth Prepass");
-    GPU_ZONE(m_profiler, command, "Depth Prepass");
+    GPU_ZONE(m_profiler, m_context->GetCurrentCommand(), "Depth Prepass");
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindRenderTargets(nullptr, m_depth_texture.depth_stencil);
-    command->BindShader(m_depth_prepass.shader);
+    m_render_graph.AddPass("Depth Prepass", m_depth_prepass.shader)
+        .WriteDepthStencil(m_depth_texture.depth_stencil)
+        .SetDepthLoadOp(Swift::LoadOp::eClear)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                for (const auto& renderable : m_renderables)
+                {
+                    const struct PushConstants
+                    {
+                        uint32_t position_buffer;
+                        uint32_t meshlet_buffer;
+                        uint32_t mesh_vertex_buffer;
+                        uint32_t mesh_triangle_buffer;
 
-    for (const auto& renderable : m_renderables)
-    {
-        const struct PushConstants
-        {
-            uint32_t vertex_buffer;
-            uint32_t meshlet_buffer;
-            uint32_t mesh_vertex_buffer;
-            uint32_t mesh_triangle_buffer;
-
-            uint32_t transform_index;
-            uint32_t meshlet_count;
-            uint32_t bounding_offset;
-        } push_constants{
-            .vertex_buffer = renderable.m_vertex_buffer.GetDescriptorIndex(),
-            .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
-            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
-            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
-            .transform_index = renderable.m_transform_index,
-            .meshlet_count = renderable.m_meshlet_count,
-            .bounding_offset = renderable.m_bounding_offset,
-        };
-        command->PushConstants(&push_constants, sizeof(PushConstants));
-        renderable.Draw(command, false);
-    }
+                        uint32_t transform_index;
+                        uint32_t meshlet_count;
+                        uint32_t bounding_offset;
+                    } push_constants{
+                        .position_buffer = renderable.m_position_buffer.GetDescriptorIndex(),
+                        .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
+                        .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
+                        .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
+                        .transform_index = renderable.m_transform_index,
+                        .meshlet_count = renderable.m_meshlet_count,
+                        .bounding_offset = renderable.m_bounding_offset,
+                    };
+                    command->PushConstants(&push_constants, sizeof(PushConstants));
+                    renderable.Draw(command, true);
+                }
+            });
 }
 
-void Renderer::DrawGeometry(Swift::ICommand* command) const
+void Renderer::DrawGeometry()
 {
     CPU_ZONE("Geometry Pass");
-    GPU_ZONE(m_profiler, command, "Geometry Pass");
+    GPU_ZONE(m_profiler, m_context->GetCurrentCommand(), "Geometry Pass");
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindRenderTargets(m_render_texture.render_target, m_depth_texture.depth_stencil);
-    command->BindShader(m_pbr_shader);
-    command->TransitionImage(m_ssao_pass.blur_texture.texture, Swift::ResourceState::eShaderResource);
+    m_render_graph.AddPass("GeometryPass", m_pbr_shader)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .Read(m_ssao_pass.blur_texture.srv)
+        .WriteRenderTarget(m_render_texture.render_target)
+        .WriteDepthStencil(m_depth_texture.depth_stencil)
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                for (const auto& renderable : m_renderables)
+                {
+                    const struct PushConstants
+                    {
+                        uint32_t shadow_sampler_index;
+                        uint32_t sampler_index;
+                        uint32_t position_buffer;
+                        uint32_t vertex_buffer;
 
-    for (const auto& renderable : m_renderables)
-    {
-        const struct PushConstants
-        {
-            uint32_t shadow_sampler_index;
-            uint32_t sampler_index;
-            uint32_t vertex_buffer;
+                        uint32_t meshlet_buffer;
+                        uint32_t mesh_vertex_buffer;
+                        uint32_t mesh_triangle_buffer;
+                        int material_index;
 
-            uint32_t meshlet_buffer;
-            uint32_t mesh_vertex_buffer;
-            uint32_t mesh_triangle_buffer;
-            int material_index;
-
-            uint32_t transform_index;
-            uint32_t meshlet_count;
-            uint32_t bounding_offset;
-        } push_constants{
-            .shadow_sampler_index = m_shadow_comparison_sampler->GetDescriptorIndex(),
-            .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-            .vertex_buffer = renderable.m_vertex_buffer.GetDescriptorIndex(),
-            .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
-            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
-            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
-            .material_index = renderable.m_material_index,
-            .transform_index = renderable.m_transform_index,
-            .meshlet_count = renderable.m_meshlet_count,
-            .bounding_offset = renderable.m_bounding_offset,
-        };
-        command->PushConstants(&push_constants, sizeof(PushConstants));
-        renderable.Draw(command, true);
-    }
+                        uint32_t transform_index;
+                        uint32_t meshlet_count;
+                        uint32_t bounding_offset;
+                    } push_constants{
+                        .shadow_sampler_index = m_shadow_comparison_sampler->GetDescriptorIndex(),
+                        .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                        .position_buffer = renderable.m_position_buffer.GetDescriptorIndex(),
+                        .vertex_buffer = renderable.m_attrib_buffer.GetDescriptorIndex(),
+                        .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
+                        .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
+                        .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
+                        .material_index = renderable.m_material_index,
+                        .transform_index = renderable.m_transform_index,
+                        .meshlet_count = renderable.m_meshlet_count,
+                        .bounding_offset = renderable.m_bounding_offset,
+                    };
+                    command->PushConstants(&push_constants, sizeof(PushConstants));
+                    renderable.Draw(command, true);
+                }
+            });
 }
 
-void Renderer::DrawSSAOPass(Swift::ICommand* command) const
+void Renderer::DrawSSAOPass()
 {
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->TransitionImage(m_depth_texture.texture, Swift::ResourceState::eDepthRead);
-    command->TransitionImage(m_ssao_pass.gen_texture.texture, Swift::ResourceState::eRenderTarget);
-    command->TransitionImage(m_ssao_pass.noise_texture.texture, Swift::ResourceState::eShaderResource);
-    command->ClearRenderTarget(m_ssao_pass.gen_texture.render_target, {});
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindShader(m_ssao_pass.gen_shader);
-    command->BindRenderTargets(m_ssao_pass.gen_texture.render_target, nullptr);
-    const auto noise_scale = glm::vec2(float_size[0] / 4.f, float_size[1] / 4.f);
-    const struct PushConstant
-    {
-        uint32_t depth_texture_index;
-        uint32_t sampler_index;
-        uint32_t noise_texture_index;
-        uint32_t kernel_buffer_index;
 
-        float sample_rad;
-        glm::vec2 noise_scale;
-    } pc{
-        .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
-        .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-        .noise_texture_index = m_ssao_pass.noise_texture.GetSRVDescriptorIndex(),
-        .kernel_buffer_index = m_ssao_pass.kernel_buffer.GetDescriptorIndex(),
-        .sample_rad = 0.5,
-        .noise_scale = noise_scale,
-    };
-    command->PushConstants(&pc, sizeof(PushConstant));
-    command->DispatchMesh(1, 1, 1);
+    m_render_graph.AddPass("SSAO Gen Pass", m_ssao_pass.gen_shader)
+        .SetRenderLoadOp(Swift::LoadOp::eClear)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .Read(m_depth_texture.srv)
+        .Read(m_ssao_pass.noise_texture.srv)
+        .WriteRenderTarget(m_ssao_pass.gen_texture.render_target)
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                const auto noise_scale = glm::vec2(window_size[0] / 4.f, window_size[1] / 4.f);
+                const struct PushConstant
+                {
+                    uint32_t depth_texture_index;
+                    uint32_t sampler_index;
+                    uint32_t noise_texture_index;
+                    uint32_t kernel_buffer_index;
 
-    command->TransitionImage(m_ssao_pass.blur_texture.texture, Swift::ResourceState::eRenderTarget);
-    command->TransitionImage(m_ssao_pass.gen_texture.texture, Swift::ResourceState::eShaderResource);
-    command->BindShader(m_ssao_pass.blur_shader);
-    command->BindRenderTargets(m_ssao_pass.blur_texture.render_target, nullptr);
-    command->ClearRenderTarget(m_ssao_pass.blur_texture.render_target, {});
-    const struct BlurPushConstant
-    {
-        uint32_t ssao_texture_index;
-        uint32_t sampler_index;
-    } blur_pc{
-        .ssao_texture_index = m_ssao_pass.gen_texture.GetSRVDescriptorIndex(),
-        .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-    };
-    command->PushConstants(&blur_pc, sizeof(BlurPushConstant));
-    command->DispatchMesh(1, 1, 1);
+                    float sample_rad;
+                    glm::vec2 noise_scale;
+                } pc{
+                    .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
+                    .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                    .noise_texture_index = m_ssao_pass.noise_texture.GetSRVDescriptorIndex(),
+                    .kernel_buffer_index = m_ssao_pass.kernel_buffer.GetDescriptorIndex(),
+                    .sample_rad = 0.5,
+                    .noise_scale = noise_scale,
+                };
+                command->PushConstants(&pc, sizeof(PushConstant));
+                command->DispatchMesh(1, 1, 1);
+            });
+
+    m_render_graph.AddPass("SSAO BlurPass", m_ssao_pass.blur_shader)
+        .SetRenderLoadOp(Swift::LoadOp::eClear)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .Read(m_ssao_pass.gen_texture.srv)
+        .WriteRenderTarget(m_ssao_pass.blur_texture.render_target)
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                const struct BlurPushConstant
+                {
+                    uint32_t ssao_texture_index;
+                    uint32_t sampler_index;
+                } blur_pc{
+                    .ssao_texture_index = m_ssao_pass.gen_texture.GetSRVDescriptorIndex(),
+                    .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                };
+                command->PushConstants(&blur_pc, sizeof(BlurPushConstant));
+                command->DispatchMesh(1, 1, 1);
+            });
 }
 
-void Renderer::DrawSkybox(Swift::ICommand* command) const
+void Renderer::DrawSkybox()
 {
     CPU_ZONE("Skybox Pass");
-    GPU_ZONE(m_profiler, command, "Skybox Pass");
+    GPU_ZONE(m_profiler, m_context->GetCurrentCommand(), "Skybox Pass");
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindRenderTargets(m_render_texture.render_target, m_depth_texture.depth_stencil);
-    command->BindShader(m_skybox_pass.shader);
-    const struct PushConstants
-    {
-        uint32_t sampler_index;
-    } pc{
-        .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-    };
-    command->PushConstants(&pc, sizeof(PushConstants));
-    command->DispatchMesh(1, 1, 1);
+
+    m_render_graph.AddPass("Skybox Pass", m_skybox_pass.shader)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .WriteRenderTarget(m_render_texture.render_target)
+        .WriteDepthStencil(m_depth_texture.depth_stencil)
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                const struct PushConstants
+                {
+                    uint32_t sampler_index;
+                } pc{
+                    .sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                };
+                command->PushConstants(&pc, sizeof(PushConstants));
+                command->DispatchMesh(1, 1, 1);
+            });
 }
 
-void Renderer::DrawShadowPass(Swift::ICommand* command) const
+void Renderer::DrawShadowPass(Swift::ICommand* shadow_command)
 {
-    CPU_ZONE("Shadow Pass");
-    GPU_ZONE(m_profiler, command, "Shadow Pass");
-    command->SetViewport(Swift::Viewport{ .dimensions = { 4096, 4096 } });
-    command->SetScissor(Swift::Scissor{ .dimensions = { 4096, 4096 } });
-    command->TransitionImage(m_shadow_pass.texture.texture, Swift::ResourceState::eDepthWrite);
-    command->ClearDepthStencil(m_shadow_pass.texture.depth_stencil, 1.f, 0);
-    command->BindRenderTargets(nullptr, m_shadow_pass.texture.depth_stencil);
-    command->BindShader(m_shadow_pass.shader);
-
-    for (const auto& renderable : m_renderables)
+    if (!shadow_command)
     {
-        const struct PushConstants
-        {
-            uint32_t vertex_buffer;
-            uint32_t meshlet_buffer;
-            uint32_t mesh_vertex_buffer;
-            uint32_t mesh_triangle_buffer;
-
-            uint32_t transform_index;
-            uint32_t meshlet_count;
-            uint32_t bounding_offset;
-        } push_constants{
-            .vertex_buffer = renderable.m_vertex_buffer.GetDescriptorIndex(),
-            .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
-            .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
-            .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
-            .transform_index = renderable.m_transform_index,
-            .meshlet_count = renderable.m_meshlet_count,
-            .bounding_offset = renderable.m_bounding_offset,
-        };
-        command->PushConstants(&push_constants, sizeof(PushConstants));
-        renderable.Draw(command, false);
+        shadow_command = m_context->GetCurrentCommand();
     }
-    command->TransitionImage(m_shadow_pass.texture.texture, Swift::ResourceState::eShaderResource);
+    CPU_ZONE("Shadow Pass");
+    GPU_ZONE(m_profiler, shadow_command, "Shadow Pass");
+
+    m_render_graph.AddPass("Shadow Pass", m_shadow_pass.shader)
+        .SetRenderExtents(Swift::Float2(4096, 4096))
+        .SetDepthLoadOp(Swift::LoadOp::eClear)
+        .WriteDepthStencil(m_shadow_pass.texture.depth_stencil)
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                for (const auto& renderable : m_renderables)
+                {
+                    const struct PushConstants
+                    {
+                        uint32_t position_buffer;
+                        uint32_t meshlet_buffer;
+                        uint32_t mesh_vertex_buffer;
+                        uint32_t mesh_triangle_buffer;
+
+                        uint32_t transform_index;
+                        uint32_t meshlet_count;
+                        uint32_t bounding_offset;
+                    } push_constants{
+                        .position_buffer = renderable.m_position_buffer.GetDescriptorIndex(),
+                        .meshlet_buffer = renderable.m_mesh_buffer.GetDescriptorIndex(),
+                        .mesh_vertex_buffer = renderable.m_mesh_vertex_buffer.GetDescriptorIndex(),
+                        .mesh_triangle_buffer = renderable.m_mesh_triangle_buffer.GetDescriptorIndex(),
+                        .transform_index = renderable.m_transform_index,
+                        .meshlet_count = renderable.m_meshlet_count,
+                        .bounding_offset = renderable.m_bounding_offset,
+                    };
+                    command->PushConstants(&push_constants, sizeof(PushConstants));
+                    renderable.Draw(command, false);
+                }
+            });
 }
 
-void Renderer::DrawGrassPass(Swift::ICommand* command) const
+void Renderer::DrawGrassPass()
 {
     if (m_grass_pass.patches.empty()) return;
     CPU_ZONE("Grass Pass");
-    GPU_ZONE(m_profiler, command, "Grass Pass");
+    GPU_ZONE(m_profiler, m_context->GetCurrentCommand(), "Grass Pass");
+
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindRenderTargets(m_render_texture.render_target, m_depth_texture.depth_stencil);
-    command->BindShader(m_grass_pass.shader);
+    m_render_graph.AddPass("Grass Pass", m_grass_pass.shader)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .WriteRenderTarget(m_render_texture.render_target)
+        .WriteDepthStencil(m_depth_texture.depth_stencil)
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                const struct PushConstant
+                {
+                    float wind_speed;
+                    float wind_strength;
+                    uint32_t apply_view_space_thicken;
+                    float lod_distance;
 
-    const struct PushConstant
-    {
-        float wind_speed;
-        float wind_strength;
-        uint32_t apply_view_space_thicken;
-        float lod_distance;
+                    uint32_t grass_count;
+                    float time;
+                } pc{
+                    .wind_speed = m_grass_pass.wind_speed,
+                    .wind_strength = m_grass_pass.wind_strength,
+                    .apply_view_space_thicken = m_grass_pass.apply_view_space_thicken,
+                    .lod_distance = m_grass_pass.lod_distance,
+                    .grass_count = static_cast<uint32_t>(m_grass_pass.patches.size()),
+                    .time = m_engine->GetTime(),
+                };
+                command->PushConstants(&pc, sizeof(PushConstant));
 
-        uint32_t grass_count;
-        float time;
-    } pc{
-        .wind_speed = m_grass_pass.wind_speed,
-        .wind_strength = m_grass_pass.wind_strength,
-        .apply_view_space_thicken = m_grass_pass.apply_view_space_thicken,
-        .lod_distance = m_grass_pass.lod_distance,
-        .grass_count = static_cast<uint32_t>(m_grass_pass.patches.size()),
-        .time = m_engine->GetTime(),
-    };
-    command->PushConstants(&pc, sizeof(PushConstant));
-
-    const uint32_t num_amp_groups = (m_grass_pass.patches.size() + 31) / 32;
-    command->DispatchMesh(num_amp_groups, 1, 1);
+                const uint32_t num_amp_groups = (m_grass_pass.patches.size() + 31) / 32;
+                command->DispatchMesh(num_amp_groups, 1, 1);
+            });
 }
 
-void Renderer::DrawBloomPass(Swift::ICommand* command)
+void Renderer::DrawBloomPass()
 {
-    command->TransitionImage(m_render_texture.texture, Swift::ResourceState::eShaderResource);
-    command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
-
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
+    m_render_graph.AddPass("Bloom Extract Pass", m_bloom_pass.extract_shader)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .Read(m_render_texture.srv)
+        .WriteRenderTarget(m_post_process_hdr.m_dst_texture.render_target)
+        .SetExecute(
+            [&](Swift::ICommand* command)
+            {
+                const struct PushConstant
+                {
+                    uint32_t scene_texture_index;
+                    uint32_t bilinear_sampler_index;
+                } pc{
+                    .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
+                    .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                };
+                command->PushConstants(&pc, sizeof(PushConstant));
+                command->DispatchMesh(1, 1, 1);
+            });
 
-    command->BindShader(m_bloom_pass.extract_shader);
-    command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
-    const struct PushConstant
-    {
-        uint32_t scene_texture_index;
-        uint32_t bilinear_sampler_index;
-    } pc{
-        .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
-        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-    };
-    command->PushConstants(&pc, sizeof(PushConstant));
-    command->DispatchMesh(1, 1, 1);
-
-    command->BindShader(m_bloom_pass.blur_shader);
     for (int i = 0; i < m_bloom_pass.blur_count; ++i)
     {
         m_post_process_hdr.Swap();
-        command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
-        command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
-        command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
-        const struct BlurPushConstant
-        {
-            uint32_t bloom_texture_index;
-            uint32_t bilinear_sampler_index;
-            uint32_t horizontal;
-        } blur_pc{
-            .bloom_texture_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
-            .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-            .horizontal = i % 2 == 0 ? 1u : 0u,
-        };
-        command->PushConstants(&blur_pc, sizeof(BlurPushConstant));
-        command->DispatchMesh(1, 1, 1);
+        uint32_t src_idx = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex();
+        uint32_t horizontal = i % 2 == 0 ? 1u : 0u;
+
+        m_render_graph.AddPass("Bloom Blur Pass", m_bloom_pass.blur_shader)
+            .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+            .Read(m_post_process_hdr.m_src_texture.srv)
+            .WriteRenderTarget(m_post_process_hdr.m_dst_texture.render_target)
+            .SetExecute(
+                [&, src_idx, horizontal](Swift::ICommand* command)
+                {
+                    const struct BlurPushConstant
+                    {
+                        uint32_t bloom_texture_index;
+                        uint32_t bilinear_sampler_index;
+                        uint32_t horizontal;
+                    } blur_pc{
+                        .bloom_texture_index = src_idx,
+                        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                        .horizontal = horizontal,
+                    };
+                    command->PushConstants(&blur_pc, sizeof(BlurPushConstant));
+                    command->DispatchMesh(1, 1, 1);
+                });
     }
 
-    command->BindShader(m_bloom_pass.combine_shader);
     m_post_process_hdr.Swap();
-    command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
-    command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
-    command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
-    const struct CombinePushConstant
-    {
-        uint32_t scene_texture_index;
-        uint32_t bloom_blur_texture_index;
-        uint32_t bilinear_sampler_index;
-        float exposure;
-    } combine_pc{
-        .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
-        .bloom_blur_texture_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
-        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-        .exposure = m_tonemap_pass.exposure,
-    };
-    command->PushConstants(&combine_pc, sizeof(CombinePushConstant));
-    command->DispatchMesh(1, 1, 1);
+    m_render_graph.AddPass("Bloom Combine Pass", m_bloom_pass.combine_shader)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .Read(m_post_process_hdr.m_src_texture.srv)
+        .WriteRenderTarget(m_post_process_hdr.m_dst_texture.render_target)
+        .SetExecute(
+            [&, src_idx = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex()](Swift::ICommand* command)
+            {
+                const struct CombinePushConstant
+                {
+                    uint32_t scene_texture_index;
+                    uint32_t bloom_blur_texture_index;
+                    uint32_t bilinear_sampler_index;
+                    float exposure;
+                } combine_pc{
+                    .scene_texture_index = m_render_texture.GetSRVDescriptorIndex(),
+                    .bloom_blur_texture_index = src_idx,
+                    .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                    .exposure = m_tonemap_pass.exposure,
+                };
+                command->PushConstants(&combine_pc, sizeof(CombinePushConstant));
+                command->DispatchMesh(1, 1, 1);
+            });
 }
 
-void Renderer::DrawVolumetricFog(Swift::ICommand* command)
+void Renderer::DrawVolumetricFog()
 {
     m_post_process_hdr.Swap();
-    command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
-    command->TransitionImage(m_depth_texture.texture, Swift::ResourceState::eShaderResource);
-    command->TransitionImage(m_post_process_hdr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindShader(m_fog_pass.shader);
-    command->BindRenderTargets(m_post_process_hdr.m_dst_texture.render_target, nullptr);
-    const struct PushConstant
-    {
-        uint32_t scene_texture_index;
-        uint32_t depth_texture_index;
-        uint32_t bilinear_sampler_index;
-        uint32_t point_sampler_index;
+    m_render_graph.AddPass("Fog Pass", m_fog_pass.shader)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .Read(m_post_process_hdr.m_src_texture.srv)
+        .Read(m_depth_texture.srv)
+        .WriteRenderTarget(m_post_process_hdr.m_dst_texture.render_target)
+        .SetExecute(
+            [&, src_idx = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex()](Swift::ICommand* command)
+            {
+                const struct PushConstant
+                {
+                    uint32_t scene_texture_index;
+                    uint32_t depth_texture_index;
+                    uint32_t bilinear_sampler_index;
+                    uint32_t point_sampler_index;
 
-        uint32_t shadow_sampler_index;
-    } pc{
-        .scene_texture_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
-        .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
-        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-        .point_sampler_index = m_nearest_sampler->GetDescriptorIndex(),
-        .shadow_sampler_index = m_shadow_comparison_sampler->GetDescriptorIndex(),
-    };
-    command->PushConstants(&pc, sizeof(PushConstant));
-    command->DispatchMesh(1, 1, 1);
+                    uint32_t shadow_sampler_index;
+                } pc{
+                    .scene_texture_index = src_idx,
+                    .depth_texture_index = m_depth_texture.GetSRVDescriptorIndex(),
+                    .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                    .point_sampler_index = m_nearest_sampler->GetDescriptorIndex(),
+                    .shadow_sampler_index = m_shadow_comparison_sampler->GetDescriptorIndex(),
+                };
+                command->PushConstants(&pc, sizeof(PushConstant));
+                command->DispatchMesh(1, 1, 1);
+            });
 }
 
-void Renderer::DrawTonemapPass(Swift::ICommand* command)
+void Renderer::DrawTonemapPass()
 {
     m_post_process_hdr.Swap();
-
-    command->TransitionImage(m_post_process_hdr.m_src_texture.texture, Swift::ResourceState::eShaderResource);
-    command->TransitionImage(m_post_process_ldr.m_dst_texture.texture, Swift::ResourceState::eRenderTarget);
     const auto& window = m_engine->GetWindow();
     auto window_size = window.GetSize();
-    const auto float_size = std::array{ static_cast<float>(window_size[0]), static_cast<float>(window_size[1]) };
-    command->SetViewport(Swift::Viewport{ .dimensions = float_size });
-    command->SetScissor(Swift::Scissor{ .dimensions = { window_size.x, window_size.y } });
-    command->BindShader(m_tonemap_pass.shader);
-    command->BindRenderTargets(m_post_process_ldr.m_dst_texture.render_target, nullptr);
-    const struct PushConstant
-    {
-        uint32_t source_index;
-        uint32_t bilinear_sampler_index;
-        float exposure;
-    } pc{
-        .source_index = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex(),
-        .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
-        .exposure = m_tonemap_pass.exposure,
-    };
-    command->PushConstants(&pc, sizeof(PushConstant));
-    command->DispatchMesh(1, 1, 1);
+    m_render_graph.AddPass("Tonemap Pass", m_tonemap_pass.shader)
+        .SetRenderExtents(Swift::Float2(window_size.x, window_size.y))
+        .Read(m_post_process_hdr.m_src_texture.srv)
+        .WriteRenderTarget(m_post_process_ldr.m_dst_texture.render_target)
+        .SetExecute(
+            [&, src_idx = m_post_process_hdr.m_src_texture.GetSRVDescriptorIndex()](Swift::ICommand* command)
+            {
+                const struct PushConstant
+                {
+                    uint32_t source_index;
+                    uint32_t bilinear_sampler_index;
+                    float exposure;
+                } pc{
+                    .source_index = src_idx,
+                    .bilinear_sampler_index = m_bilinear_sampler->GetDescriptorIndex(),
+                    .exposure = m_tonemap_pass.exposure,
+                };
+                command->PushConstants(&pc, sizeof(PushConstant));
+                command->DispatchMesh(1, 1, 1);
+            });
 }
 
 void Renderer::InitImgui() const

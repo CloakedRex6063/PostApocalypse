@@ -78,7 +78,7 @@ Swift::ITexture* Resources::LoadTexture(const std::filesystem::path& path) const
 }
 
 std::tuple<std::vector<meshopt_Meshlet>, std::vector<uint32_t>, std::vector<uint8_t>> Resources::BuildMeshlets(
-    const std::span<const Vertex> vertices,
+    const std::span<const glm::vec3> positions,
     const std::span<const uint32_t> indices)
 {
     std::vector<meshopt_Meshlet> meshlets;
@@ -93,20 +93,19 @@ std::tuple<std::vector<meshopt_Meshlet>, std::vector<uint32_t>, std::vector<uint
                                                      mesh_triangles.data(),
                                                      indices.data(),
                                                      indices.size(),
-                                                     reinterpret_cast<const float*>(vertices.data()),
-                                                     vertices.size(),
-                                                     sizeof(Vertex),
+                                                     reinterpret_cast<const float*>(positions.data()),
+                                                     positions.size(),
+                                                     sizeof(glm::vec3),
                                                      64,
                                                      124,
                                                      0.f);
     const auto& [vertex_offset, triangle_offset, vertex_count, triangle_count] = meshlets[meshlet_count - 1];
     for (size_t i = 0; i < meshlet_count; i++)
     {
-        meshopt_optimizeMeshlet(
-            &mesh_vertices[meshlets[i].vertex_offset],
-            &mesh_triangles[meshlets[i].triangle_offset],
-            meshlets[i].triangle_count,
-            meshlets[i].vertex_count);
+        meshopt_optimizeMeshlet(&mesh_vertices[meshlets[i].vertex_offset],
+                                &mesh_triangles[meshlets[i].triangle_offset],
+                                meshlets[i].triangle_count,
+                                meshlets[i].vertex_count);
     }
     mesh_vertices.resize(vertex_offset + vertex_count);
     mesh_triangles.resize(triangle_offset + (triangle_count * 3 + 3 & ~3));
@@ -137,13 +136,15 @@ std::vector<uint32_t> Resources::RepackMeshlets(std::span<meshopt_Meshlet> meshl
     return repacked_meshlets;
 }
 
-void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices)
+void Resources::LoadTangents(std::vector<glm::vec3>& positions, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices)
 {
     struct Pair
     {
+        std::span<glm::vec3> positions;
         std::span<Vertex> vertices;
         std::span<uint32_t> indices;
     } pair{
+        .positions = positions,
         .vertices = vertices,
         .indices = indices,
     };
@@ -154,17 +155,17 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
         .m_getPosition =
             [](const SMikkTSpaceContext* ctx, float out[], int faceIdx, int vertIdx)
         {
-            auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
-            int idx = pair->indices[faceIdx * 3 + vertIdx];
-            out[0] = pair->vertices[idx].position[0];
-            out[1] = pair->vertices[idx].position[1];
-            out[2] = pair->vertices[idx].position[2];
+            const auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
+            const int idx = pair->indices[faceIdx * 3 + vertIdx];
+            out[0] = pair->positions[idx].x;
+            out[1] = pair->positions[idx].y;
+            out[2] = pair->positions[idx].z;
         },
         .m_getNormal =
             [](const SMikkTSpaceContext* ctx, float out[], int faceIdx, int vertIdx)
         {
             auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
-            int idx = pair->indices[faceIdx * 3 + vertIdx];
+            const int idx = pair->indices[faceIdx * 3 + vertIdx];
             out[0] = pair->vertices[idx].normal[0];
             out[1] = pair->vertices[idx].normal[1];
             out[2] = pair->vertices[idx].normal[2];
@@ -173,7 +174,7 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
             [](const SMikkTSpaceContext* ctx, float out[], int faceIdx, int vertIdx)
         {
             auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
-            int idx = pair->indices[faceIdx * 3 + vertIdx];
+            const int idx = pair->indices[faceIdx * 3 + vertIdx];
             out[0] = pair->vertices[idx].uv_x;
             out[1] = pair->vertices[idx].uv_y;
         },
@@ -182,7 +183,7 @@ void Resources::LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t
             {
                 auto* const pair = static_cast<Pair*>(ctx->m_pUserData);
                 const int idx = pair->indices[faceIdx * 3 + vertIdx];
-                pair->vertices[idx].tangent = { tangent[0], tangent[1], tangent[2], sign };
+                pair->vertices[idx].tangent = { tangent[0], tangent[1], tangent[2] * sign };
             })
     };
 
@@ -340,17 +341,17 @@ std::vector<Mesh> Resources::LoadMesh(Model& model, const fastgltf::Asset& asset
     for (const auto& prim : mesh.primitives)
     {
         auto indices = LoadIndices(asset, prim);
-        const auto vertices = LoadVertices(asset, prim, indices);
-        auto [meshlets, meshlet_vertices, meshlet_triangles] = BuildMeshlets(vertices, indices);
+        const auto [positions, vertices] = LoadVertices(asset, prim, indices);
+        auto [meshlets, meshlet_vertices, meshlet_triangles] = BuildMeshlets(positions, indices);
 
         for (const auto& meshlet : meshlets)
         {
             const meshopt_Bounds bounds = meshopt_computeMeshletBounds(&meshlet_vertices[meshlet.vertex_offset],
                                                                        &meshlet_triangles[meshlet.triangle_offset],
                                                                        meshlet.triangle_count,
-                                                                       &vertices[0].position.x,
-                                                                       vertices.size(),
-                                                                       sizeof(Vertex));
+                                                                       reinterpret_cast<const float*>(positions.data()),
+                                                                       positions.size(),
+                                                                       sizeof(glm::vec3));
 
             model.cull_datas.push_back(CullData{
                 .center = glm::vec3(bounds.center[0], bounds.center[1], bounds.center[2]),
@@ -364,7 +365,8 @@ std::vector<Mesh> Resources::LoadMesh(Model& model, const fastgltf::Asset& asset
         Mesh m{
             .name = std::string(mesh.name),
             .meshlets = meshlets,
-            .vertices = vertices,
+            .positions = positions,
+            .vertex_attribs = vertices,
             .meshlet_vertices = meshlet_vertices,
             .meshlet_triangles = repacked_triangles,
             .material_index = static_cast<int>(prim.materialIndex.value_or(-1)),
@@ -491,31 +493,31 @@ std::shared_ptr<Actor> Resources::LoadModel(const std::filesystem::path& path, c
     return actor;
 }
 
-std::vector<Vertex> Resources::LoadVertices(const fastgltf::Asset& asset,
+std::tuple<std::vector<glm::vec3>, std::vector<Vertex>> Resources::LoadVertices(const fastgltf::Asset& asset,
                                             const fastgltf::Primitive& primitive,
                                             std::vector<uint32_t>& indices)
 {
-    const auto positionIt = primitive.findAttribute("POSITION");
-    const auto normalIt = primitive.findAttribute("NORMAL");
-    const auto uvIt = primitive.findAttribute("TEXCOORD_0");
+    const auto *const positionIt = primitive.findAttribute("POSITION");
+    const auto *const normalIt = primitive.findAttribute("NORMAL");
+    const auto *const uvIt = primitive.findAttribute("TEXCOORD_0");
 
     if (positionIt == primitive.attributes.end()) return {};
 
-    auto& positionAccessor = asset.accessors[primitive.findAttribute("POSITION")->accessorIndex];
+    const auto& positionAccessor = asset.accessors[primitive.findAttribute("POSITION")->accessorIndex];
     std::vector<Vertex> vertices(positionAccessor.count);
+    std::vector<glm::vec3> positions(positionAccessor.count);
     fastgltf::iterateAccessorWithIndex<glm::vec3>(asset,
                                                   positionAccessor,
                                                   [&](const glm::vec3& position, const size_t index)
-                                                  { vertices[index].position = position; });
+                                                  { positions[index] = position; });
 
-    auto& normalAccessor = asset.accessors[normalIt->accessorIndex];
+    const auto& normalAccessor = asset.accessors[normalIt->accessorIndex];
     fastgltf::iterateAccessorWithIndex<glm::vec3>(asset,
                                                   normalAccessor,
                                                   [&](const glm::vec3& normal, const size_t index)
                                                   { vertices[index].normal = normal; });
 
-    auto& uvAccessor = asset.accessors[uvIt->accessorIndex];
-    if (uvAccessor.type == fastgltf::AccessorType::Vec2)
+    if (const auto& uvAccessor = asset.accessors[uvIt->accessorIndex]; uvAccessor.type == fastgltf::AccessorType::Vec2)
     {
         fastgltf::iterateAccessorWithIndex<glm::vec2>(asset,
                                                       uvAccessor,
@@ -538,8 +540,8 @@ std::vector<Vertex> Resources::LoadVertices(const fastgltf::Asset& asset,
                                                       });
     }
 
-    LoadTangents(vertices, indices);
-    return vertices;
+    LoadTangents(positions, vertices, indices);
+    return {positions, vertices};
 }
 
 std::vector<uint32_t> Resources::LoadIndices(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive)

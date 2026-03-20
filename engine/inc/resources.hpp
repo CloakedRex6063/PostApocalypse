@@ -4,18 +4,18 @@ class Renderer;
 
 struct Vertex
 {
-    glm::vec3 position;
     float uv_x;
     glm::vec3 normal;
     float uv_y;
-    glm::vec4 tangent;
+    glm::vec3 tangent;
 };
 
 struct Mesh
 {
     std::string name;
     std::vector<meshopt_Meshlet> meshlets;
-    std::vector<Vertex> vertices;
+    std::vector<glm::vec3> positions;
+    std::vector<Vertex> vertex_attribs;
     std::vector<uint32_t> meshlet_vertices;
     std::vector<uint32_t> meshlet_triangles;
     int material_index;
@@ -100,13 +100,13 @@ public:
 
 private:
     static std::tuple<std::vector<meshopt_Meshlet>, std::vector<uint32_t>, std::vector<uint8_t>> BuildMeshlets(
-        std::span<const Vertex> vertices,
+        std::span<const glm::vec3> positions,
         std::span<const uint32_t> indices);
 
     static std::vector<uint32_t> RepackMeshlets(std::span<meshopt_Meshlet> meshlets,
                                                 std::span<const uint8_t> meshlet_triangles);
 
-    static void LoadTangents(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
+    static void LoadTangents(std::vector<glm::vec3>& positions, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices);
     static Texture LoadTexture(const std::string& base_path, const fastgltf::Asset& asset, const fastgltf::Texture& texture);
     static uint32_t PackCone(const meshopt_Bounds& bounds);
 
@@ -125,7 +125,7 @@ private:
         glm::vec3 position,
         glm::vec3 scale);
     static std::vector<uint32_t> LoadIndices(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive);
-    static std::vector<Vertex> LoadVertices(const fastgltf::Asset& asset,
+    static std::tuple<std::vector<glm::vec3>, std::vector<Vertex>> LoadVertices(const fastgltf::Asset& asset,
                                             const fastgltf::Primitive& primitive,
                                             std::vector<uint32_t>& indices);
     static glm::mat4 GetLocalTransform(const fastgltf::Node& node);

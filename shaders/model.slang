@@ -6,6 +6,7 @@ struct PushConstant
 {
     uint shadow_sampler_index;
     uint bilinear_sampler_index;
+    uint position_buffer_index;
     uint vertex_buffer_index;
 
     uint mesh_buffer_index;
@@ -16,7 +17,6 @@ struct PushConstant
     uint transform_index;
     uint meshlet_count;
     uint bounding_offset;
-    uint ibl_index;
 };
 
 ConstantBuffer<PushConstant> PushConstants : register(b0);
@@ -35,7 +35,7 @@ struct OutVertex
     float4 light_space_pos : POSITION1;
     float2 uv : TEXCOORD0;
     float3 normal : NORMAL;
-    float4 tangent : TANGENT;
+    float3 tangent : TANGENT;
 };
 
 [numthreads(32, 1, 1)]
@@ -73,6 +73,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
                OutputVertices<OutVertex, 64> verts,
                OutputIndices<uint3, 124> triangles)
 {
+    var position_buffer = DescriptorHandle<StructuredBuffer<float3>>(PushConstants.position_buffer_index);
     var vertex_buffer = DescriptorHandle<StructuredBuffer<Vertex>>(PushConstants.vertex_buffer_index);
     var meshlet_buffer = DescriptorHandle<StructuredBuffer<Meshlet>>(PushConstants.mesh_buffer_index);
     var mesh_vertex_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_vertex_buffer_index);
@@ -97,14 +98,15 @@ void mesh_main(uint gtid: SV_GroupThreadID,
     {
         uint vertex_index = meshlet.vertex_offset + gtid;
         vertex_index = mesh_vertex_buffer[vertex_index];
+        float3 position = position_buffer[vertex_index];
         Vertex vertex = vertex_buffer[vertex_index];
-        float4 world_pos = mul(transform, float4(vertex.position, 1.0));
+        float4 world_pos = mul(transform, float4(position, 1.0));
         verts[gtid].position = mul(GlobalConstants.view_proj, world_pos);
         verts[gtid].world_pos = world_pos.xyz;
         verts[gtid].light_space_pos = mul(GlobalConstants.sun_view_proj, world_pos);
         verts[gtid].normal = mul(transform, float4(vertex.normal, 0.0)).rgb;
         verts[gtid].uv = float2(vertex.uv_x, vertex.uv_y);
-        verts[gtid].tangent = mul(transform, vertex.tangent);
+        verts[gtid].tangent = mul(transform, float4(vertex.tangent, 0.0)).rgb;
     }
 }
 
@@ -138,8 +140,10 @@ float4 pixel_main(OutVertex input) : SV_TARGET
     float3 n = input.normal;
     var normal_texture = DescriptorHandle<Sampler2D>(uint2(material.normal_index, PushConstants.bilinear_sampler_index));
     float3 tangent_normal = normal_texture.Sample(input.uv).rgb * 2.0 - 1.0;
-    float3 bitangent = cross(input.normal, input.tangent.xyz) * input.tangent.w;
-    float3x3 TBN = float3x3(input.tangent.xyz, bitangent, input.normal);
+    float signT = input.tangent.z < 0.0 ? -1.0 : 1.0;
+    float3 T = normalize(float3(input.tangent.xy, abs(input.tangent.z)));
+    float3 bitangent = cross(input.normal, T) * signT;
+    float3x3 TBN = float3x3(T, bitangent, input.normal);
     n = normalize(mul(tangent_normal, TBN));
 
     float occlusion = 1.0;
@@ -178,7 +182,7 @@ float4 pixel_main(OutVertex input) : SV_TARGET
         CalculateShadow(shadow_sampler, uint2(width, height), input.light_space_pos, n, dir_light_buffer[0].direction);
 
     var specular_ibl_texture =
-        DescriptorHandle<SamplerCube>(uint2(PushConstants.ibl_index, PushConstants.bilinear_sampler_index));
+        DescriptorHandle<SamplerCube>(uint2(GlobalConstants.ibl_texture_index, PushConstants.bilinear_sampler_index));
     float3 ibl = CalculateIBL(n, v, albedo, metallic, roughness, specular_ibl_texture);
 
     var ssao_sampler =

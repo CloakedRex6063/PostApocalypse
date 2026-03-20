@@ -8,7 +8,7 @@ struct OutVertex
 
 struct PushConstant
 {
-    uint vertex_buffer_index;
+    uint position_buffer_index;
     uint mesh_buffer_index;
     uint mesh_vertex_buffer_index;
     uint mesh_triangle_buffer_index;
@@ -27,7 +27,7 @@ void mesh_main(uint gtid: SV_GroupThreadID,
                OutputVertices<OutVertex, 64> verts,
                OutputIndices<uint3, 124> triangles)
 {
-    var vertex_buffer = DescriptorHandle<StructuredBuffer<Vertex>>(PushConstants.vertex_buffer_index);
+    var position_buffer = DescriptorHandle<StructuredBuffer<float3>>(PushConstants.position_buffer_index);
     var meshlet_buffer = DescriptorHandle<StructuredBuffer<Meshlet>>(PushConstants.mesh_buffer_index);
     var mesh_vertex_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_vertex_buffer_index);
     var mesh_triangle_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_triangle_buffer_index);
@@ -50,8 +50,8 @@ void mesh_main(uint gtid: SV_GroupThreadID,
         var transform = transform_buffer[PushConstants.transform_index];
         uint vertex_index = meshlet.vertex_offset + gtid;
         vertex_index = mesh_vertex_buffer[vertex_index];
-        Vertex vertex = vertex_buffer[vertex_index];
-        float4 world_pos = mul(transform, float4(vertex.position, 1.0));
+        float3 position = position_buffer[vertex_index];
+        float4 world_pos = mul(transform, float4(position, 1.0));
         verts[gtid].position = mul(GlobalConstants.sun_view_proj, world_pos);
         verts[gtid].world_pos = world_pos.xyz;
     }

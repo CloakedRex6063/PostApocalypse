@@ -1,4 +1,5 @@
 #include "common.slang"
+#include "cull.slang"
 
 struct OutVertex
 {
@@ -8,7 +9,7 @@ struct OutVertex
 
 struct PushConstant
 {
-    uint vertex_buffer_index;
+    uint position_buffer_index;
     uint mesh_buffer_index;
     uint mesh_vertex_buffer_index;
     uint mesh_triangle_buffer_index;
@@ -19,21 +20,56 @@ struct PushConstant
 };
 ConstantBuffer<PushConstant> PushConstants : register(b0);
 
+struct TaskPayload
+{
+    uint meshlet_index[32];
+};
+
+groupshared TaskPayload s_Payload;
+
+[numthreads(32, 1, 1)]
+[shader("amplification")]
+void ampl_main(uint dtid: SV_DispatchThreadID, uint gtid: SV_GroupThreadID, uint gid: SV_GroupID)
+{
+    bool visible = false;
+
+    if (dtid < PushConstants.meshlet_count)
+    {
+        var transform_buffer = DescriptorHandle<StructuredBuffer<float4x4>>(GlobalConstants.transform_buffer_index);
+        var transform = transform_buffer[PushConstants.transform_index];
+        var frustum_buffer = DescriptorHandle<StructuredBuffer<Frustum>>(GlobalConstants.frustum_buffer_index);
+        var bounding_buffer = DescriptorHandle<StructuredBuffer<CullData>>(GlobalConstants.bounding_buffer_index);
+        var cull_data = bounding_buffer[dtid + PushConstants.bounding_offset];
+        visible = IsVisibleAfterFrustumAndConeCull(frustum_buffer[0], cull_data, transform, GlobalConstants.cam_pos);
+    }
+
+    if (visible)
+    {
+        uint index = WavePrefixCountBits(visible);
+        s_Payload.meshlet_index[index] = dtid;
+    }
+
+    uint visible_count = WaveActiveCountBits(visible);
+    DispatchMesh(visible_count, 1, 1, s_Payload);
+}
+
 [outputtopology("triangle")]
 [numthreads(128, 1, 1)]
 [shader("mesh")]
 void mesh_main(uint gtid: SV_GroupThreadID,
                uint gid: SV_GroupID,
+               in payload TaskPayload payload,
                OutputVertices<OutVertex, 64> verts,
                OutputIndices<uint3, 124> triangles)
 {
-    var vertex_buffer = DescriptorHandle<StructuredBuffer<Vertex>>(PushConstants.vertex_buffer_index);
+    var position_buffer = DescriptorHandle<StructuredBuffer<float3>>(PushConstants.position_buffer_index);
     var meshlet_buffer = DescriptorHandle<StructuredBuffer<Meshlet>>(PushConstants.mesh_buffer_index);
     var mesh_vertex_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_vertex_buffer_index);
     var mesh_triangle_buffer = DescriptorHandle<StructuredBuffer<uint>>(PushConstants.mesh_triangle_buffer_index);
     var transform_buffer = DescriptorHandle<StructuredBuffer<float4x4>>(GlobalConstants.transform_buffer_index);
 
-    Meshlet meshlet = meshlet_buffer[gid];
+    uint meshlet_index = payload.meshlet_index[gid];
+    Meshlet meshlet = meshlet_buffer[meshlet_index];
     SetMeshOutputCounts(meshlet.vertex_count, meshlet.triangle_count);
 
     if (gtid < meshlet.triangle_count)
@@ -50,8 +86,8 @@ void mesh_main(uint gtid: SV_GroupThreadID,
         var transform = transform_buffer[PushConstants.transform_index];
         uint vertex_index = meshlet.vertex_offset + gtid;
         vertex_index = mesh_vertex_buffer[vertex_index];
-        Vertex vertex = vertex_buffer[vertex_index];
-        float4 world_pos = mul(transform, float4(vertex.position, 1.0));
+        float3 position = position_buffer[vertex_index];
+        float4 world_pos = mul(transform, float4(position, 1.0));
         verts[gtid].position = mul(GlobalConstants.view_proj, world_pos);
         verts[gtid].world_pos = world_pos.xyz;
     }

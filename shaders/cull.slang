@@ -42,8 +42,7 @@ bool IsVisibleAfterFrustumAndConeCull(Frustum frustum, CullData cull_data, float
         return true;
 
     float3 axis = normalize(mul(transform, float4(cone_axis, 0))).xyz;
-    float3 apex = center.xyz - axis * scale;
-    float3 view = normalize(camera_position - apex);
+    float3 view = normalize(camera_position - mul(transform, float4(cull_data.cone_apex, 1)).xyz);
 
     if (dot(view, -axis) > cone_cutoff)
         return false;

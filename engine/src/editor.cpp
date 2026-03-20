@@ -4,6 +4,7 @@
 
 void Editor::Render(const uint64_t* image_handle)
 {
+
     ImGui::DockSpaceOverViewport(0, nullptr, ImGuiDockNodeFlags_PassthruCentralNode);
     ImGui::Begin("Viewport ",
                  nullptr,
@@ -15,7 +16,7 @@ void Editor::Render(const uint64_t* image_handle)
     {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ModelPayload"))
         {
-            const auto* const model_location = (const char*)payload->Data;
+            const auto* const model_location = static_cast<const char*>(payload->Data);
 
             const auto& camera = m_engine->GetCamera();
             const auto transform = camera.m_position + camera.GetForwardVector();
@@ -164,29 +165,28 @@ void Editor::UpdateRenderSettings()
 void ContentBrowser::Render()
 {
     ImGui::Begin("Content Browser");
-    static auto currentPath = std::filesystem::current_path().string();
-    const auto basePath = std::filesystem::current_path().string();
-    const ImVec2 mainSize = ImGui::GetContentRegionAvail();
-    const ImVec2 childSize(mainSize.x * 0.15f, mainSize.y);
+    static auto current_path = std::filesystem::current_path().string();
+    const auto base_path = std::filesystem::current_path().string();
+    const ImVec2 main_size = ImGui::GetContentRegionAvail();
+    const ImVec2 child_size(main_size.x * 0.15f, main_size.y);
 
-    ImGui::BeginChild("Folders", childSize, true);
-
-    DrawRoot(basePath, currentPath);
+    ImGui::BeginChild("Folders", child_size, true);
+    DrawRoot(base_path, current_path);
     ImGui::EndChild();
 
     ImGui::SameLine();
 
-    ImGui::BeginChild("Content Browser", ImVec2(mainSize.x * 0.85f, mainSize.y), true);
+    ImGui::BeginChild("Content Browser", ImVec2(main_size.x * 0.85f, main_size.y), true);
 
     ImGui::SetCursorPosX(50.f);
 
-    constexpr int columnCount = 6;
-    if (ImGui::BeginTable("##hidden", columnCount))
+    constexpr int column_count = 6;
+    if (ImGui::BeginTable("##hidden", column_count))
     {
         int columnIndex = 0;
 
         int id = 0;
-        for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator(currentPath))
+        for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator(current_path))
         {
             ImGui::PushID(id);
             if (columnIndex == 0) ImGui::TableNextRow();
@@ -211,13 +211,13 @@ void ContentBrowser::Render()
             {
                 if (entry.is_directory())
                 {
-                    currentPath = entry.path().string();
+                    current_path = entry.path().string();
                 }
             }
 
             ImGui::Text(name.c_str());
 
-            columnIndex = (columnIndex + 1) % columnCount;
+            columnIndex = (columnIndex + 1) % column_count;
 
             ImGui::PopID();
             id++;
@@ -240,7 +240,7 @@ bool ContentBrowser::DrawRoot(const std::string_view path, std::string& selected
     }
 
     const auto name = std::string(" ") + "Assets";
-    bool opened = ImGui::TreeNodeEx(name.c_str(), flags);
+    const bool opened = ImGui::TreeNodeEx(name.c_str(), flags);
 
     if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen())
     {
@@ -255,7 +255,9 @@ bool ContentBrowser::DrawRoot(const std::string_view path, std::string& selected
     return opened;
 }
 
-void ContentBrowser::DrawFolderTree(const std::filesystem::path& folder_path, std::string& selected_folder, bool root_open)
+void ContentBrowser::DrawFolderTree(const std::filesystem::path& folder_path,
+                                    std::string& selected_folder,
+                                    const bool root_open)
 {
     if (!root_open) return;
 

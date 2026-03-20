@@ -20,7 +20,7 @@ CPMAddPackage(
 CPMAddPackage(
         NAME SWIFT
         GITHUB_REPOSITORY CloakedRex6063/SwiftRender
-        GIT_TAG 8235e0ce
+        GIT_TAG 2e8cb825
 )
 CPMAddPackage(
         NAME Tracy
